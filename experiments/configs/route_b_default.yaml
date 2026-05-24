@@ -1,0 +1,54 @@
+# Route B: Deformation Inverse Operator - Default Configuration
+# InverseOperatorConfig overrides
+
+siamese_encoder:
+  siamese_channels: [64, 128, 256]
+  siamese_n_blocks: 4
+  siamese_downsample: 2
+  share_weights: true
+  feature_dim: 256
+
+latent_encoder:
+  num_latent_tokens: 128
+  latent_dim: 256
+  encoder_cross_attn_depth: 1
+  encoder_self_attn_depth: 2
+
+query_decoder:
+  fourier_mapping_size: 128
+  fourier_scale: 1.0
+  fourier_trainable_scale: true
+  query_mlp_depth: 2
+  query_mlp_dim: 256
+
+attention:
+  attn_heads: 8
+  attn_dim_head: 64
+  attn_dropout: 0.0
+  attn_pre_norm: true
+  attn_residual: true
+
+decoder:
+  mlp_depth: 2
+  mlp_dim: 256
+
+training:
+  image_size: [256, 256]
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  warmup_steps: 1000
+  max_steps: 100000
+  batch_size: 8
+  accumulate_grad_batches: 1
+
+loss:
+  data_loss_type: relative_l2
+  lambda_reg: 0.0
+  reg_loss_type: none
+
+logging:
+  log_every: 100
+  save_every: 5000
+  checkpoint_dir: checkpoints/inverse_operator
+  experiment_name: inverse_operator
+  use_wandb: false
