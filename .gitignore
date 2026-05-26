@@ -220,3 +220,7 @@ __marimo__/
 .claude/
 reference_paper/
 .deepseek/
+
+# Generated DIC datasets
+dataset/dataset/
+dataset/original_image/

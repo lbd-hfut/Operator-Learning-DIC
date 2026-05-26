@@ -1,11 +1,14 @@
 """Training script for Deformation Inverse Operator (Route B).
 
 Usage:
-    # Single GPU
+    # On-the-fly synthetic data
     python -m deformation_inverse_operator.train
 
+    # Pre-generated folder dataset
+    python -m deformation_inverse_operator.train --dataset_dir dataset/dataset/2026-05-26/train
+
     # Multi-GPU via DDP
-    torchrun --nproc_per_node=4 -m deformation_inverse_operator.train --use_ddp
+    torchrun --nproc_per_node=4 -m deformation_inverse_operator.train --use_ddp --dataset_dir ...
 """
 import os
 import sys
@@ -23,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dataset.config import DatasetConfig
 from dataset.dic_dataset import DICDataset
+from dataset.folder_dataset import FolderDICDataset
 from dataset.collate import collate_fn
 from deformation_inverse_operator.config import InverseOperatorConfig
 from deformation_inverse_operator.model import InverseOperatorModel
@@ -30,7 +34,8 @@ from common.losses import CompositeLoss
 from common.checkpoint import save_checkpoint, ensure_dir
 
 
-def train(rank: int, world_size: int, config: InverseOperatorConfig, data_config: DatasetConfig):
+def train(rank: int, world_size: int, config: InverseOperatorConfig,
+          data_config: DatasetConfig = None, dataset_dir: str = None):
     """Main training loop for Route B."""
 
     is_distributed = world_size > 1
@@ -42,7 +47,10 @@ def train(rank: int, world_size: int, config: InverseOperatorConfig, data_config
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Dataset
-    dataset = DICDataset(data_config)
+    if dataset_dir:
+        dataset = FolderDICDataset(split_dir=dataset_dir)
+    else:
+        dataset = DICDataset(data_config)
     sampler = DistributedSampler(dataset) if is_distributed else None
     loader = DataLoader(
         dataset,
@@ -127,17 +135,23 @@ def train(rank: int, world_size: int, config: InverseOperatorConfig, data_config
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--use_ddp", action="store_true")
+    parser.add_argument("--dataset_dir", type=str, default=None,
+                        help="path to pre-generated folder dataset")
     args = parser.parse_args()
 
     config = InverseOperatorConfig()
-    data_config = DatasetConfig(n_samples=10000, seed=42)
+
+    if args.dataset_dir:
+        data_config = None
+    else:
+        data_config = DatasetConfig(n_samples=10000, seed=42)
 
     if args.use_ddp:
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         world_size = int(os.environ.get("WORLD_SIZE", 1))
-        train(local_rank, world_size, config, data_config)
+        train(local_rank, world_size, config, data_config, args.dataset_dir)
     else:
-        train(0, 1, config, data_config)
+        train(0, 1, config, data_config, args.dataset_dir)
 
 
 if __name__ == "__main__":

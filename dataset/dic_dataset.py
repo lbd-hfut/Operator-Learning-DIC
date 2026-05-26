@@ -8,6 +8,7 @@ import numpy as np
 from typing import Dict, Optional
 from .config import DatasetConfig
 from .speckle_generator import SpeckleGenerator
+from .image_pool import RealImagePool
 from .deformation_generator import DeformationGenerator
 from .warp import warp_image
 from .noise import add_gaussian_noise
@@ -29,6 +30,12 @@ class DICDataset(torch.utils.data.Dataset):
     def __init__(self, config: DatasetConfig):
         self.config = config
         self.rng = np.random.RandomState(config.seed)
+
+        self.image_pool = None
+        if config.mode == "real":
+            if config.real_image_dir is None:
+                raise ValueError("real_image_dir must be set when mode='real'")
+            self.image_pool = RealImagePool(config.real_image_dir)
 
         self.aug = DICAugmentation(
             image_size=config.image_size,
@@ -53,19 +60,25 @@ class DICDataset(torch.utils.data.Dataset):
         cfg = self.config
         H, W = cfg.image_size
 
-        # 1. Generate speckle parameters
-        speckle_size = rng.uniform(*cfg.speckle_size_range)
-        speckle_density = rng.uniform(*cfg.speckle_density_range)
-        speckle_contrast = rng.uniform(*cfg.speckle_contrast_range)
+        # 1. Generate or load reference image
+        if self.image_pool is not None:
+            ref_img = self.image_pool.load_random_patch((H, W))
+            speckle_size = 0.0
+            speckle_density = 0.0
+            speckle_contrast = 0.0
+        else:
+            speckle_size = rng.uniform(*cfg.speckle_size_range)
+            speckle_density = rng.uniform(*cfg.speckle_density_range)
+            speckle_contrast = rng.uniform(*cfg.speckle_contrast_range)
 
-        speckle_gen = SpeckleGenerator(
-            image_size=(H, W),
-            particle_size_range=(speckle_size * 0.5, speckle_size),
-            density=speckle_density,
-            contrast=speckle_contrast,
-            seed=sample_seed,
-        )
-        ref_img = speckle_gen.generate()
+            speckle_gen = SpeckleGenerator(
+                image_size=(H, W),
+                particle_size_range=(speckle_size * 0.5, speckle_size),
+                density=speckle_density,
+                contrast=speckle_contrast,
+                seed=sample_seed,
+            )
+            ref_img = speckle_gen.generate()
 
         # 2. Generate deformation
         deform_gen = DeformationGenerator(
@@ -73,8 +86,7 @@ class DICDataset(torch.utils.data.Dataset):
             displacement_range=cfg.displacement_range,
             seed=sample_seed + 1 if sample_seed else None,
         )
-        mode_idx = rng.randint(0, len(cfg.deformation_modes))
-        mode = cfg.deformation_modes[mode_idx]
+        mode = cfg.sample_mode(rng)
         u_field = deform_gen.generate(mode=mode)
 
         # 3. Warp to create target image

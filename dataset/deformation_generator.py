@@ -48,11 +48,17 @@ class DeformationGenerator:
             np.ndarray [H, W, 2] displacement field (pixel units)
         """
         if mode is None:
-            modes = ["tension", "compression", "shear", "rotation", "composite"]
+            modes = [
+                "tension", "compression", "shear", "rotation", "composite",
+                "multiscale_random",
+            ]
             mode = self.rng.choice(modes)
 
         if amplitude is None:
-            amplitude = self.rng.uniform(*self.displacement_range)
+            if mode == "multiscale_random":
+                amplitude = self.rng.uniform(0.3, 1.0)
+            else:
+                amplitude = self.rng.uniform(*self.displacement_range)
 
         method = getattr(self, f"_gen_{mode}")
         return method(amplitude)
@@ -98,4 +104,57 @@ class DeformationGenerator:
             0.3 * (y - 0.5)
             + 0.1 * np.sin(2 * np.pi * y) * np.cos(2 * np.pi * x)
         )
+        return np.stack([u_x, u_y], axis=-1).astype(np.float32)
+
+    def _gen_multiscale_random(self, amplitude: float = None) -> np.ndarray:
+        """Multi-scale random deformation field (sub-pixel, < 1 px).
+
+        From "When Deep Learning Meets Digital Image Correlation":
+        Random displacements at control points on a coarse grid, bicubic
+        interpolated to full resolution. Boundaries are zeroed. The region
+        size is randomly chosen per sample from [128, 64, 32, 16, 8, 4].
+
+        This produces complex, non-smooth fields suitable for testing
+        sub-pixel DIC accuracy, where traditional IC-GN methods struggle.
+
+        Args:
+            amplitude: max displacement in pixels. If None, defaults to ~1.0.
+
+        Returns:
+            np.ndarray [H, W, 2] displacement field (pixel units)
+        """
+        from scipy.ndimage import zoom
+
+        if amplitude is None:
+            amplitude = 1.0
+
+        H, W = self.image_size
+
+        # Randomly select region size
+        region_sizes = [128, 64, 32, 16, 8, 4]
+        s = region_sizes[self.rng.randint(0, len(region_sizes))]
+
+        grid_h = H // s + 3
+        grid_w = W // s + 3
+
+        # Random displacements at control points, bounded to ±amplitude
+        f = self.rng.uniform(-amplitude, amplitude, (grid_h, grid_w))
+        g = self.rng.uniform(-amplitude, amplitude, (grid_h, grid_w))
+
+        # Bicubic interpolation (order=3) from coarse grid to full resolution
+        zoom_h = H / grid_h
+        zoom_w = W / grid_w
+        u_x = zoom(f, (zoom_h, zoom_w), order=3)
+        u_y = zoom(g, (zoom_h, zoom_w), order=3)
+
+        # Zero out boundaries (2 px each side)
+        u_x[:2, :] = 0
+        u_y[:2, :] = 0
+        u_x[-2:, :] = 0
+        u_y[-2:, :] = 0
+        u_x[:, :2] = 0
+        u_y[:, :2] = 0
+        u_x[:, -2:] = 0
+        u_y[:, -2:] = 0
+
         return np.stack([u_x, u_y], axis=-1).astype(np.float32)

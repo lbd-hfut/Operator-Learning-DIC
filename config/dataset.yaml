@@ -1,0 +1,42 @@
+# DIC Dataset Generation Configuration
+# =====================================
+
+# --- Data source ---
+# mode: "real" = load real speckle images, "synthetic" = generate synthetic speckle
+mode: real
+real_image_dir: dataset/original_image
+
+# --- Output ---
+# output_format: "dir" = individual PNG+NPY files, "h5" = single HDF5 file
+output_format: dir
+
+# --- Image ---
+image_size: [256, 256]
+
+# --- Dataset splits (number of samples per split) ---
+splits:
+  train: 800
+  validation: 100
+  test: 100
+
+# --- Deformation mode proportions ---
+# Weights determine the relative probability of each mode being selected.
+# The actual count per mode = weight / sum(weights) * n_samples.
+# Set weight to 0 to exclude a mode.
+deformation_modes:
+  tension:             1.0
+  compression:         1.0
+  shear:               1.0
+  rotation:            1.0
+  composite:           1.0
+  multiscale_random:   3.0   # higher weight for sub-pixel complex fields
+
+# --- Displacement range (pixels) ---
+# Note: multiscale_random uses its own sub-pixel range (0.3 ~ 1.0)
+displacement_range: [0.1, 20.0]
+
+# --- Noise ---
+noise_std_range: [0.0, 0.03]
+
+# --- Random seed (for reproducibility) ---
+seed: 42
