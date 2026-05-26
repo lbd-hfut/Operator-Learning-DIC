@@ -21,7 +21,7 @@ class SolverOperatorConfig:
 
     # --- Query Encoder ---
     fourier_mapping_size: int = 128
-    fourier_scale: float = 1.0
+    fourier_scale: float = 10.0
     fourier_trainable_scale: bool = True
     query_mlp_depth: int = 2
     query_mlp_dim: int = 256
@@ -40,12 +40,13 @@ class SolverOperatorConfig:
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
     warmup_steps: int = 1000
+    warmup_start_factor: float = 1e-3   # warmup 起始 lr = learning_rate * warmup_start_factor
     max_steps: int = 100000
     batch_size: int = 8
     accumulate_grad_batches: int = 1
 
     # --- Loss ---
-    data_loss_type: str = "relative_l2"
+    data_loss_type: str = "huber"
     lambda_reg: float = 0.0
     reg_loss_type: str = "none"
 

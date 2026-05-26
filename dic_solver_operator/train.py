@@ -65,7 +65,7 @@ def train(rank: int, world_size: int, config: SolverOperatorConfig,
         sampler=sampler,
         shuffle=(sampler is None),
         collate_fn=collate_fn,
-        num_workers=4,
+        num_workers=0 if os.name == "nt" else 4,
         pin_memory=True,
     )
 
@@ -76,7 +76,7 @@ def train(rank: int, world_size: int, config: SolverOperatorConfig,
 
     # --- Optimizer & scheduler ---
     optimizer = AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-    warmup = LinearLR(optimizer, start_factor=1e-3, end_factor=1.0,
+    warmup = LinearLR(optimizer, start_factor=config.warmup_start_factor, end_factor=1.0,
                       total_iters=config.warmup_steps)
     cosine = CosineAnnealingLR(optimizer, T_max=config.max_steps - config.warmup_steps,
                                eta_min=config.learning_rate * 1e-2)

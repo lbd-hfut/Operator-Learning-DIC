@@ -40,7 +40,7 @@ class InverseDecoder(nn.Module):
         self,
         latent_dim: int = 256,
         fourier_mapping_size: int = 128,
-        fourier_scale: float = 1.0,
+        fourier_scale: float = 10.0,
         fourier_trainable_scale: bool = True,
         query_mlp_depth: int = 2,
         query_mlp_dim: int = 256,

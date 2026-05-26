@@ -23,7 +23,7 @@ class GaussianFourierFeatureTransform(nn.Module):
     def __init__(
         self,
         mapping_size: int = 128,
-        scale: float = 1.0,
+        scale: float = 10.0,
         trainable_scale: bool = True,
     ):
         super().__init__()

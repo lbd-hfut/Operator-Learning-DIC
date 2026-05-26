@@ -38,7 +38,7 @@ model:
   # --- Shared: Query Coordinate Encoder ---
   query_encoder:
     fourier_mapping_size: 128
-    fourier_scale: 1.0
+    fourier_scale: 10.0
     fourier_trainable_scale: true
     query_mlp_depth: 2
     query_mlp_dim: 256
@@ -59,16 +59,17 @@ model:
 # --- Training ---
 training:
   image_size: [256, 256]
-  learning_rate: 1.0e-4
+  learning_rate: 1.0e-3
   weight_decay: 1.0e-5
-  warmup_steps: 1000
-  max_steps: 100000
+  warmup_steps: 500
+  warmup_start_factor: 5.0e-2  # warmup start lr = learning_rate * this
+  max_steps: 10000
   batch_size: 8
   accumulate_grad_batches: 1
 
 # --- Loss ---
 loss:
-  data_loss_type: relative_l2      # "relative_l2" | "huber"
+  data_loss_type: huber              # "huber" | "relative_l2"
   reg_loss_type: none              # "none" | "smoothness" | "compatibility"
   lambda_reg: 0.0
   huber_delta: 1.0                 # only when data_loss_type = "huber"
@@ -80,9 +81,9 @@ resume_a_from: ""    # Route A (Solver Operator)
 resume_b_from: ""    # Route B (Inverse Operator)
 
 # --- Logging & Checkpoints ---
+# checkpoint_dir defaults: checkpoints/route_a (Route A), checkpoints/route_b (Route B)
 logging:
   log_every: 100                   # log loss every N steps
-  save_every: 5000                 # save <name>_last.pt every N steps (overwrites)
-  checkpoint_dir: checkpoints      # default: overridden per route (route_a / route_b)
+  save_every: 500                  # save <name>_last.pt every N steps (overwrites)
   experiment_name: dic_operator
   use_wandb: false
