@@ -68,6 +68,6 @@ class InverseOperatorConfig:
     # --- Logging ---
     log_every: int = 100
     save_every: int = 5000
-    checkpoint_dir: str = "checkpoints/inverse_operator"
+    checkpoint_dir: str = "checkpoints/route_b"
     experiment_name: str = "inverse_operator"
     use_wandb: bool = False

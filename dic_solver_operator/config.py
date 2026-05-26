@@ -56,6 +56,6 @@ class SolverOperatorConfig:
     # --- Logging ---
     log_every: int = 100
     save_every: int = 5000
-    checkpoint_dir: str = "checkpoints/solver_operator"
+    checkpoint_dir: str = "checkpoints/route_a"
     experiment_name: str = "solver_operator"
     use_wandb: bool = False

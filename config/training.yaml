@@ -1,0 +1,88 @@
+# DIC Operator Training Configuration
+# ===================================
+# Shared settings for both Route A and Route B.
+# Route-specific sections are labeled.
+
+# --- Route selection ---
+route: A   # "A" = Solver Operator, "B" = Inverse Operator
+
+# --- Dataset ---
+dataset_dir: dataset/dataset/2026-05-26   # path to pre-generated dataset root
+
+# --- Model architecture ---
+model:
+  feature_dim: 256
+
+  # --- Route A: Dual-Channel CNN Encoder ---
+  route_a:
+    encoder:
+      in_channels: 2               # ref + tar concatenated
+      channels: [64, 128, 256]
+      kernel_size: 7
+      n_blocks: 4                  # ResBlocks per stage
+      downsample: 2                # total spatial reduction factor (2 => H/4, W/4)
+
+  # --- Route B: Siamese CNN + Latent Encoder ---
+  route_b:
+    siamese_encoder:
+      channels: [64, 128, 256]
+      n_blocks: 4
+      downsample: 2
+      share_weights: true          # shared CNN for ref and tar
+    latent_encoder:
+      num_latent_tokens: 128       # M: compact latent tokens
+      latent_dim: 256
+      cross_attn_depth: 1          # sequential cross-attention layers
+      self_attn_depth: 2           # self-attention refinement on latent
+
+  # --- Shared: Query Coordinate Encoder ---
+  query_encoder:
+    fourier_mapping_size: 128
+    fourier_scale: 1.0
+    fourier_trainable_scale: true
+    query_mlp_depth: 2
+    query_mlp_dim: 256
+
+  # --- Shared: Cross-Attention ---
+  attention:
+    heads: 8
+    dim_head: 64
+    dropout: 0.0
+    pre_norm: true                 # Galerkin-type InstanceNorm on K, V
+    residual: true
+
+  # --- Shared: Decoder MLP ---
+  decoder:
+    mlp_depth: 2
+    mlp_dim: 256
+
+# --- Training ---
+training:
+  image_size: [256, 256]
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  warmup_steps: 1000
+  max_steps: 100000
+  batch_size: 8
+  accumulate_grad_batches: 1
+
+# --- Loss ---
+loss:
+  data_loss_type: relative_l2      # "relative_l2" | "huber"
+  reg_loss_type: none              # "none" | "smoothness" | "compatibility"
+  lambda_reg: 0.0
+  huber_delta: 1.0                 # only when data_loss_type = "huber"
+
+# --- Resume ---
+# Set to a checkpoint path to resume, or leave empty to start fresh.
+# If empty and <checkpoint_dir>/<experiment_name>_last.pt exists, auto-resumes.
+resume_a_from: ""    # Route A (Solver Operator)
+resume_b_from: ""    # Route B (Inverse Operator)
+
+# --- Logging & Checkpoints ---
+logging:
+  log_every: 100                   # log loss every N steps
+  save_every: 5000                 # save <name>_last.pt every N steps (overwrites)
+  checkpoint_dir: checkpoints      # default: overridden per route (route_a / route_b)
+  experiment_name: dic_operator
+  use_wandb: false
