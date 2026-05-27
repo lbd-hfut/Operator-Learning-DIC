@@ -85,7 +85,7 @@ class InverseDecoder(nn.Module):
         output_layers = []
         in_dim = decoder_mlp_dim
         for _ in range(decoder_mlp_depth - 1):
-            output_layers.append(PostNorm(in_dim, FeedForward(in_dim)))
+            output_layers.append(FeedForward(in_dim))
         output_layers.append(nn.Linear(in_dim, 2))
         self.output_head = nn.Sequential(*output_layers)
 

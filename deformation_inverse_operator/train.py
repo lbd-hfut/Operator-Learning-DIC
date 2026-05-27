@@ -77,7 +77,7 @@ def train(rank: int, world_size: int, config: InverseOperatorConfig,
     warmup = LinearLR(optimizer, start_factor=config.warmup_start_factor, end_factor=1.0,
                       total_iters=config.warmup_steps)
     cosine = CosineAnnealingLR(optimizer, T_max=config.max_steps - config.warmup_steps,
-                               eta_min=config.learning_rate * 1e-2)
+                               eta_min=config.learning_rate * 1e-1)
     scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine],
                              milestones=[config.warmup_steps])
 

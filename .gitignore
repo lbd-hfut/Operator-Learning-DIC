@@ -224,3 +224,4 @@ reference_paper/
 # Generated DIC datasets
 dataset/dataset/
 dataset/original_image/
+checkpoints/

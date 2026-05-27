@@ -51,7 +51,7 @@ class InverseOperatorConfig:
     image_size: Tuple[int, int] = (256, 256)
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
-    warmup_steps: int = 1000
+    warmup_steps: int = 2000
     warmup_start_factor: float = 1e-3   # warmup 起始 lr = learning_rate * warmup_start_factor
     max_steps: int = 100000
     batch_size: int = 8
