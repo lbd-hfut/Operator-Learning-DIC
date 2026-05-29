@@ -12,7 +12,7 @@ class SolverOperatorConfig:
     """Configuration for Route A: DIC Solver Operator."""
 
     # --- Encoder (Dual-Channel CNN) ---
-    encoder_in_channels: int = 2          # ref + tar concatenated
+    encoder_in_channels: int = 3          # ref + tar + diff concatenated
     encoder_channels: Tuple[int, ...] = (64, 128, 256)
     encoder_kernel_size: int = 7
     encoder_n_blocks: int = 4             # ResBlocks per stage
@@ -27,12 +27,12 @@ class SolverOperatorConfig:
     query_mlp_dim: int = 256
 
     # --- Cross-Attention Decoder ---
+    attn_depth: int = 2                      # stacked cross-attention layers
     attn_heads: int = 8
     attn_dim_head: int = 64
     attn_dropout: float = 0.0
-    attn_pre_norm: bool = True            # Galerkin-type InstanceNorm
+    attn_pre_norm: bool = True            # Galerkin-type InstanceNorm on K only
     attn_residual: bool = True
-    decoder_mlp_depth: int = 2
     decoder_mlp_dim: int = 256
 
     # --- Training ---

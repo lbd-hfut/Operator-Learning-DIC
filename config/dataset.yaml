@@ -24,12 +24,12 @@ splits:
 # The actual count per mode = weight / sum(weights) * n_samples.
 # Set weight to 0 to exclude a mode.
 deformation_modes:
-  tension:             1.0
-  compression:         1.0
-  shear:               1.0
-  rotation:            1.0
-  composite:           1.0
-  multiscale_random:   0.0   # higher weight for sub-pixel complex fields
+  tension:             0.0
+  compression:         0.0
+  shear:               0.0
+  rotation:            0.0
+  composite:           0.0
+  multiscale_random:   1.0   # higher weight for sub-pixel complex fields
 
 # --- Displacement range (pixels) ---
 # Note: multiscale_random uses its own sub-pixel range (0.3 ~ 1.0)

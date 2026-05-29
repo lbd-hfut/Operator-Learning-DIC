@@ -1,121 +1,64 @@
 """Decoder for DIC Solver Operator (Route A).
 
-Decodes displacement values at arbitrary query coordinates by
-cross-attending to the feature field F_input from the encoder.
+Decodes displacement at query points using only local encoder features
+(no cross-attention) + positional encoding — a per-point MLP decoder.
 
 For each query point y:
-  q(y) = MLP(GFF(y))
-  u(y) = CrossAttn(q(y), F_input) -> MLP -> (u_x, u_y)
+  f_local(y) = bilinear_sample(F_2d, y)
+  u(y) = MLP([GFF(y), f_local(y)])
 """
+import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from common.gaussian_fourier_features import GaussianFourierFeatureTransform
-from common.cross_attention import CrossLinearAttention
-from common.feedforward import FeedForward
-from common.layer_norm import PostNorm
 
 
-class SolverDecoder(nn.Module):
-    """Operator decoder for Route A.
+class SimpleLocalDecoder(nn.Module):
+    """Per-point decoder: samples local encoder features + position → MLP → u.
 
-    Given the feature field F_input, decodes displacement at query points
-    via learnable cross-attention.
-
-    Args:
-        feature_dim: dimension of F_input features
-        fourier_mapping_size: GFF random features
-        fourier_scale: sigma for GFF
-        query_mlp_depth: MLP depth for query encoding
-        query_mlp_dim: hidden dim for query MLP
-        attn_heads: number of attention heads
-        attn_dim_head: dimension per head
-        attn_dropout: attention dropout
-        attn_pre_norm: Galerkin-type InstanceNorm on K,V
-        decoder_mlp_depth: MLP depth after attention
-        decoder_mlp_dim: hidden dim for decoder MLP
+    No cross-attention — tests whether the encoder alone can produce
+    displacement-relevant local features at each spatial position.
     """
 
-    def __init__(
-        self,
-        feature_dim: int = 256,
-        fourier_mapping_size: int = 128,
-        fourier_scale: float = 10.0,
-        fourier_trainable_scale: bool = True,
-        query_mlp_depth: int = 2,
-        query_mlp_dim: int = 256,
-        attn_heads: int = 8,
-        attn_dim_head: int = 64,
-        attn_dropout: float = 0.0,
-        attn_pre_norm: bool = True,
-        attn_residual: bool = True,
-        decoder_mlp_depth: int = 2,
-        decoder_mlp_dim: int = 256,
-    ):
+    def __init__(self, feature_dim=256, pos_dim=256, hidden_dim=512):
         super().__init__()
-
-        # Coordinate encoding
         self.gff = GaussianFourierFeatureTransform(
-            mapping_size=fourier_mapping_size,
-            scale=fourier_scale,
-            trainable_scale=fourier_trainable_scale,
+            mapping_size=128, scale=2.0, trainable_scale=True,
         )
-
-        # Query MLP: GFF output -> query embedding
-        query_layers = []
-        in_dim = self.gff.output_dim
-        for _ in range(query_mlp_depth - 1):
-            query_layers.extend([
-                nn.Linear(in_dim, query_mlp_dim),
-                nn.GELU(),
-            ])
-            in_dim = query_mlp_dim
-        query_layers.append(nn.Linear(in_dim, query_mlp_dim))
-        self.query_encoder = nn.Sequential(*query_layers)
-
-        # Cross-attention: query attends to F_input
-        self.cross_attn = CrossLinearAttention(
-            query_dim=query_mlp_dim,
-            context_dim=feature_dim,
-            dim=decoder_mlp_dim,
-            heads=attn_heads,
-            dim_head=attn_dim_head,
-            dropout=attn_dropout,
-            pre_norm=attn_pre_norm,
-            residual=attn_residual,
+        self.net = nn.Sequential(
+            nn.Linear(self.gff.output_dim + feature_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, 2),
         )
+        nn.init.constant_(self.net[-1].bias, 0.0)
 
-        # Output MLP: attention output -> displacement
-        output_layers = []
-        in_dim = decoder_mlp_dim
-        for _ in range(decoder_mlp_depth - 1):
-            output_layers.append(FeedForward(in_dim))
-        output_layers.append(nn.Linear(in_dim, 2))
-        self.output_head = nn.Sequential(*output_layers)
-
-    def forward(
-        self,
-        query_points: torch.Tensor,
-        f_input: torch.Tensor,
-    ) -> torch.Tensor:
-        """Decode displacement at query points.
-
-        Args:
-            query_points: [B, N_q, 2] normalized coordinates in [0,1]²
-            f_input: [B, N_kv, d] feature field from encoder
-
-        Returns:
-            u_pred: [B, N_q, 2] predicted displacement in pixels
-        """
+    def forward(self, query_points, f_input):
         B, N_q, _ = query_points.shape
+        _, N_kv, d = f_input.shape
+        Hf = Wf = int(math.sqrt(N_kv))
 
-        # Encode query coordinates
-        q = self.gff(query_points)          # [B, N_q, 2*mapping_size]
-        q = self.query_encoder(q)           # [B, N_q, query_mlp_dim]
+        # Sample local encoder feature at each query point
+        f_2d = f_input.transpose(1, 2).reshape(B, d, Hf, Wf)
+        grid = query_points * 2.0 - 1.0
+        grid = grid.unsqueeze(2)
+        f_local = F.grid_sample(f_2d, grid, mode='bilinear',
+                                padding_mode='border', align_corners=True)
+        f_local = f_local.squeeze(-1).transpose(1, 2)  # [B, N_q, d]
 
-        # Cross-attend to feature field
-        q = self.cross_attn(q, f_input)     # [B, N_q, decoder_mlp_dim]
+        # Position encoding
+        pos = self.gff(query_points)  # [B, N_q, 2*mapping_size]
 
-        # Predict displacement
-        u_pred = self.output_head(q)        # [B, N_q, 2]
-        return u_pred
+        # MLP: position + local feature → displacement
+        x = torch.cat([pos, f_local], dim=-1)
+        return self.net(x)
+
+
+class SolverDecoder(SimpleLocalDecoder):
+    """Alias for backward compatibility — wraps SimpleLocalDecoder."""
+    pass

@@ -1,6 +1,6 @@
 """Full DIC Solver Operator Model (Route A).
 
-Combines DualChannelCNN encoder with cross-attention decoder.
+DualChannelCNN encoder -> local feature sampling decoder (no cross-attention).
 Supports separate encode()/decode() for flexible inference.
 """
 import torch
@@ -38,18 +38,6 @@ class SolverOperatorModel(nn.Module):
 
         self.decoder = SolverDecoder(
             feature_dim=config.feature_dim,
-            fourier_mapping_size=config.fourier_mapping_size,
-            fourier_scale=config.fourier_scale,
-            fourier_trainable_scale=config.fourier_trainable_scale,
-            query_mlp_depth=config.query_mlp_depth,
-            query_mlp_dim=config.query_mlp_dim,
-            attn_heads=config.attn_heads,
-            attn_dim_head=config.attn_dim_head,
-            attn_dropout=config.attn_dropout,
-            attn_pre_norm=config.attn_pre_norm,
-            attn_residual=config.attn_residual,
-            decoder_mlp_depth=config.decoder_mlp_depth,
-            decoder_mlp_dim=config.decoder_mlp_dim,
         )
 
     def encode(

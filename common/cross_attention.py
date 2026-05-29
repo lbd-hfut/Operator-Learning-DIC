@@ -3,8 +3,9 @@
 Mathematical interpretation:
   Z = Q @ (K^T @ V) / n
 
-Each column of K, V is a learnable basis function evaluated at discrete points.
-InstanceNorm on K/V columns normalizes ||basis_j||_2 = 1.
+Each column of K is a learnable basis function evaluated at discrete points.
+InstanceNorm on K columns normalizes ||basis_j||_2 = 1.
+V is NOT normalized to preserve displacement magnitude information.
 
 Complexity: O(N·d²) instead of O(N²·d) for standard softmax attention.
 """
@@ -28,7 +29,8 @@ class CrossLinearAttention(nn.Module):
         dim_head: dimension per head
         dropout: attention dropout rate
         use_rope: if True, applies rotary position embedding to query and key
-        pre_norm: if True, applies InstanceNorm to K, V columns (Galerkin type)
+        pre_norm: if True, applies InstanceNorm to K columns only (Galerkin type).
+            V is left un-normalized to preserve displacement magnitude information.
     """
 
     def __init__(
@@ -69,7 +71,6 @@ class CrossLinearAttention(nn.Module):
 
         if pre_norm:
             self.k_norm = nn.InstanceNorm1d(inner_dim)
-            self.v_norm = nn.InstanceNorm1d(inner_dim)
 
     def forward(
         self,
@@ -106,15 +107,12 @@ class CrossLinearAttention(nn.Module):
             k = self.k_norm(k)
             k = k.reshape(B, H, N_kv, D)
 
-            v = v.reshape(B, H * D, N_kv)
-            v = self.v_norm(v)
-            v = v.reshape(B, H, N_kv, D)
 
         # Linear attention: Q @ (K^T @ V) / N_kv
         # Following Galerkin type: compute K^T @ V first
         k_t = k.transpose(-1, -2)  # [B, heads, dim_head, N_kv]
         kv = torch.matmul(k_t, v)  # [B, heads, dim_head, dim_head]
-        out = torch.matmul(q, kv) / k.shape[2]  # [B, heads, N_q, dim_head]
+        out = torch.matmul(q, kv) / (k.shape[2] ** 0.5)  # [B, heads, N_q, dim_head]
 
         # Merge heads
         out = out.transpose(1, 2).contiguous().view(out.shape[0], out.shape[2], -1)

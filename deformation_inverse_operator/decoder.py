@@ -1,110 +1,74 @@
 """Decoder for Deformation Inverse Operator (Route B).
 
-Decodes displacement at arbitrary query coordinates by cross-attending
-to the compact latent code z (rather than the full feature field).
+Decodes displacement at query points by directly sampling local features
+from both SiameseCNN feature maps — no cross-attention bottleneck.
 
-Key advantage over Route A decoder:
-  - Complexity O(M·d²) where M << N (M=128 vs N=1024+)
-  - z encodes the entire deformation field once; decoding is just lookup
+For each query point y:
+  f_ref(y) = bilinear_sample(F_ref_2d, y)
+  f_tar(y) = bilinear_sample(F_tar_2d, y)
+  u(y) = MLP([GFF(y), f_ref, f_tar, f_tar - f_ref])
 """
+import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from common.gaussian_fourier_features import GaussianFourierFeatureTransform
-from common.cross_attention import CrossLinearAttention
-from common.feedforward import FeedForward
-from common.layer_norm import PostNorm
 
 
 class InverseDecoder(nn.Module):
-    """Operator decoder for Route B.
+    """Local-feature decoder for Route B.
 
-    Given compact latent code z, decodes displacement at query points
-    via learnable cross-attention.
-
-    Args:
-        latent_dim: dimension of latent code z
-        fourier_mapping_size: GFF random features
-        fourier_scale: sigma for GFF
-        query_mlp_depth: MLP depth for query encoding
-        query_mlp_dim: hidden dim for query MLP
-        attn_heads: number of attention heads
-        attn_dim_head: dimension per head
-        attn_dropout: attention dropout
-        attn_pre_norm: Galerkin-type InstanceNorm on K,V
-        decoder_mlp_depth: MLP depth after attention
-        decoder_mlp_dim: hidden dim for decoder MLP
+    Samples encoder features from both ref and tar feature maps
+    at each query point, concatenates with GFF position encoding,
+    and processes through an MLP to predict displacement.
     """
 
-    def __init__(
-        self,
-        latent_dim: int = 256,
-        fourier_mapping_size: int = 128,
-        fourier_scale: float = 10.0,
-        fourier_trainable_scale: bool = True,
-        query_mlp_depth: int = 2,
-        query_mlp_dim: int = 256,
-        attn_heads: int = 8,
-        attn_dim_head: int = 64,
-        attn_dropout: float = 0.0,
-        attn_pre_norm: bool = True,
-        attn_residual: bool = True,
-        decoder_mlp_depth: int = 2,
-        decoder_mlp_dim: int = 256,
-    ):
+    def __init__(self, feature_dim=256, hidden_dim=512):
         super().__init__()
-
         self.gff = GaussianFourierFeatureTransform(
-            mapping_size=fourier_mapping_size,
-            scale=fourier_scale,
-            trainable_scale=fourier_trainable_scale,
+            mapping_size=128, scale=2.0, trainable_scale=True,
         )
-
-        # Query MLP
-        query_layers = []
-        in_dim = self.gff.output_dim
-        for _ in range(query_mlp_depth - 1):
-            query_layers.extend([nn.Linear(in_dim, query_mlp_dim), nn.GELU()])
-            in_dim = query_mlp_dim
-        query_layers.append(nn.Linear(in_dim, query_mlp_dim))
-        self.query_encoder = nn.Sequential(*query_layers)
-
-        # Cross-attention: query attends to latent code z
-        self.cross_attn = CrossLinearAttention(
-            query_dim=query_mlp_dim,
-            context_dim=latent_dim,
-            dim=decoder_mlp_dim,
-            heads=attn_heads,
-            dim_head=attn_dim_head,
-            dropout=attn_dropout,
-            pre_norm=attn_pre_norm,
-            residual=attn_residual,
+        # GFF(256) + f_ref(256) + f_tar(256) + f_diff(256) = 1024
+        in_dim = self.gff.output_dim + feature_dim * 3
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, 2),
         )
+        nn.init.constant_(self.net[-1].bias, 0.0)
 
-        # Output MLP
-        output_layers = []
-        in_dim = decoder_mlp_dim
-        for _ in range(decoder_mlp_depth - 1):
-            output_layers.append(FeedForward(in_dim))
-        output_layers.append(nn.Linear(in_dim, 2))
-        self.output_head = nn.Sequential(*output_layers)
-
-    def forward(
-        self,
-        query_points: torch.Tensor,
-        latent_code: torch.Tensor,
-    ) -> torch.Tensor:
-        """Decode displacement at query points from latent code.
+    def forward(self, query_points, f_ref, f_tar):
+        """Decode displacement from SiameseCNN feature maps.
 
         Args:
-            query_points: [B, N_q, 2] normalized coordinates in [0,1]²
-            latent_code: [B, M, d] compact deformation encoding
+            query_points: [B, N_q, 2] normalized coords in [0,1]
+            f_ref: [B, N_kv, d] reference image features
+            f_tar: [B, N_kv, d] target image features
 
         Returns:
-            u_pred: [B, N_q, 2] predicted displacement in pixels
+            u_pred: [B, N_q, 2]
         """
-        q = self.gff(query_points)
-        q = self.query_encoder(q)
-        q = self.cross_attn(q, latent_code)
-        u_pred = self.output_head(q)
-        return u_pred
+        B, N_q, _ = query_points.shape
+        _, N_kv, d = f_ref.shape
+        Hf = Wf = int(math.sqrt(N_kv))
+
+        def sample(f_map):
+            f_2d = f_map.transpose(1, 2).reshape(B, d, Hf, Wf)
+            grid = query_points * 2.0 - 1.0
+            grid = grid.unsqueeze(2)
+            out = F.grid_sample(f_2d, grid, mode='bilinear',
+                                padding_mode='border', align_corners=True)
+            return out.squeeze(-1).transpose(1, 2)  # [B, N_q, d]
+
+        f_ref_local = sample(f_ref)
+        f_tar_local = sample(f_tar)
+        f_diff = f_tar_local - f_ref_local
+
+        pos = self.gff(query_points)
+        x = torch.cat([pos, f_ref_local, f_tar_local, f_diff], dim=-1)
+        return self.net(x)

@@ -7,7 +7,7 @@
 route: A   # "A" = Solver Operator, "B" = Inverse Operator
 
 # --- Dataset ---
-dataset_dir: dataset/dataset/2026-05-26   # path to pre-generated dataset root
+dataset_dir: dataset/dataset/2026-05-27   # path to pre-generated dataset root
 
 # --- Model architecture ---
 model:
@@ -87,3 +87,4 @@ logging:
   save_every: 500                  # save <name>_last.pt every N steps (overwrites)
   experiment_name: dic_operator
   use_wandb: false
+ 

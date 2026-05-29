@@ -43,7 +43,7 @@ class DualChannelCNNEncoder(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = 2,
+        in_channels: int = 3,  # ref + tar + diff
         channels: tuple = (64, 128, 256),
         kernel_size: int = 7,
         n_blocks: int = 4,
@@ -95,9 +95,9 @@ class DualChannelCNNEncoder(nn.Module):
         """
         # Concatenate along channel dim
         if ref_img.shape[1] == 1 and tar_img.shape[1] == 1:
-            x = torch.cat([ref_img, tar_img], dim=1)  # [B, 2, H, W]
+            x = torch.cat([ref_img, tar_img, tar_img - ref_img], dim=1)  # [B, 3, H, W]
         else:
-            x = torch.cat([ref_img, tar_img], dim=1)
+            x = torch.cat([ref_img, tar_img, tar_img - ref_img], dim=1)
 
         B, _, H, W = x.shape
         x = self.cnn(x)  # [B, d, H/ds, W/ds]
