@@ -1,19 +1,21 @@
-"""Simple training script — supports Route A and Route B.
+"""Simple training script — supports Route A, B, and C.
 
 Usage:
     python _train_simple.py                         # Route A (default)
     python _train_simple.py --route B               # Route B
+    python _train_simple.py --route C               # Route C (U-Net)
 """
 import argparse, sys; sys.path.insert(0, ".")
 from pathlib import Path
 import torch; import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from dataset.folder_dataset import FolderDICDataset
 from dataset.collate import collate_fn
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--route", type=str, default="A", choices=["A", "B"])
+parser.add_argument("--route", type=str, default="A", choices=["A", "B", "C"])
 parser.add_argument("--steps", type=int, default=10000)
 parser.add_argument("--lr", type=float, default=1e-4)
 parser.add_argument("--data_dir", type=str, default="dataset/dataset/2026-05-27/train")
@@ -21,13 +23,20 @@ parser.add_argument("--batch_size", type=int, default=8)
 args = parser.parse_args()
 
 device = torch.device("cuda")
+is_route_c = args.route == "C"
 
-if args.route == "B":
+if args.route == "C":
+    from dic_unet_method.model import UnetDICModel
+    from dic_unet_method.config import UnetDICConfig
+    config = UnetDICConfig()
+    model = UnetDICModel(config).to(device)
+    ckpt_dir = Path("checkpoints/route_c")
+elif args.route == "B":
     from deformation_inverse_operator.model import InverseOperatorModel
     from deformation_inverse_operator.config import InverseOperatorConfig
     config = InverseOperatorConfig()
     config.warmup_steps = 0
-    config.siamese_downsample = 1        # H/2 = 128x128 — preserve speckle detail
+    config.siamese_downsample = 1
     config.fourier_scale = 2.0
     model = InverseOperatorModel(config).to(device)
     ckpt_dir = Path("checkpoints/route_b")
@@ -52,6 +61,17 @@ criterion = nn.MSELoss()
 print(f"Route {args.route} | Params: {sum(p.numel() for p in model.parameters()):,}")
 print(f"Dataset: {len(dataset)} samples, {len(loader)} batches")
 
+
+def sample_dense_at_queries(u_dense, qpts):
+    """Sample a dense [B, 2, H, W] prediction at query points [B, N_q, 2] → [B, N_q, 2]."""
+    B, _, H, W = u_dense.shape
+    grid = qpts * 2.0 - 1.0                     # [0,1] → [-1,1]
+    grid = grid.unsqueeze(2)                     # [B, N_q, 1, 2]
+    u_sampled = F.grid_sample(u_dense, grid, mode="bilinear",
+                              padding_mode="border", align_corners=True)
+    return u_sampled.squeeze(-1).transpose(1, 2)  # [B, N_q, 2]
+
+
 model.train()
 best_mse = float("inf")
 step = 0
@@ -66,7 +86,13 @@ while step < args.steps:
         qmask = batch["query_mask"].to(device)
 
         opt.zero_grad()
-        u_pred = model(ref, tar, qpts)
+
+        if is_route_c:
+            u_dense = model(ref, tar)            # [B, 2, H, W]
+            u_pred = sample_dense_at_queries(u_dense, qpts)
+        else:
+            u_pred = model(ref, tar, qpts)
+
         loss = criterion(u_pred[qmask], u_gt[qmask])
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)

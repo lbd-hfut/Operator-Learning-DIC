@@ -3,12 +3,14 @@
 Usage:
     python _predict.py                                    # Route A, auto-train if no ckpt
     python _predict.py --route B                          # Route B
+    python _predict.py --route C                          # Route C (U-Net)
     python _predict.py --route B --ckpt checkpoints/route_b/best.pt --sample 0
 """
 import argparse
 import sys; sys.path.insert(0, ".")
 import numpy as np
 import torch; import torch.nn as nn
+import torch.nn.functional as F
 from PIL import Image
 from pathlib import Path
 import matplotlib
@@ -17,7 +19,12 @@ import matplotlib.pyplot as plt
 
 
 def make_model(route, device):
-    if route == "B":
+    if route == "C":
+        from dic_unet_method.model import UnetDICModel
+        from dic_unet_method.config import UnetDICConfig
+        config = UnetDICConfig()
+        return UnetDICModel(config).to(device)
+    elif route == "B":
         from deformation_inverse_operator.model import InverseOperatorModel
         from deformation_inverse_operator.config import InverseOperatorConfig
         config = InverseOperatorConfig()
@@ -57,6 +64,12 @@ def predict_dense(model, ref, tar, device, route="A"):
     ref_t = torch.from_numpy(ref).unsqueeze(0).unsqueeze(0).to(device)
     tar_t = torch.from_numpy(tar).unsqueeze(0).unsqueeze(0).to(device)
     H, W = ref.shape
+
+    if route == "C":
+        # UNet: direct dense output [1, 2, H, W]
+        u_pred = model(ref_t, tar_t)
+        return u_pred.squeeze(0).permute(1, 2, 0).cpu().numpy()
+
     queries = build_dense_queries(H, W, device)
     encoded = model.encode(ref_t, tar_t)
     if route == "B":
@@ -121,6 +134,7 @@ def train_and_save(data_dir, ckpt_path, route, steps=3000):
     model = make_model(route, device)
     opt = AdamW(model.parameters(), lr=1e-4)
     criterion = nn.MSELoss()
+    is_route_c = route == "C"
 
     print(f"Training Route {route}, {steps} steps...")
     model.train()
@@ -135,7 +149,17 @@ def train_and_save(data_dir, ckpt_path, route, steps=3000):
             u_gt = batch["u_gt"].to(device)
             qmask = batch["query_mask"].to(device)
             opt.zero_grad()
-            u_pred = model(ref, tar, qpts)
+
+            if is_route_c:
+                u_dense = model(ref, tar)
+                grid = qpts * 2.0 - 1.0
+                grid = grid.unsqueeze(2)
+                u_sampled = F.grid_sample(u_dense, grid, mode="bilinear",
+                                          padding_mode="border", align_corners=True)
+                u_pred = u_sampled.squeeze(-1).transpose(1, 2)
+            else:
+                u_pred = model(ref, tar, qpts)
+
             loss = criterion(u_pred[qmask], u_gt[qmask])
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
@@ -154,7 +178,7 @@ def train_and_save(data_dir, ckpt_path, route, steps=3000):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--route", type=str, default="A", choices=["A", "B"])
+    parser.add_argument("--route", type=str, default="A", choices=["A", "B", "C"])
     parser.add_argument("--ckpt", type=str, default=None)
     parser.add_argument("--sample", type=int, default=0)
     parser.add_argument("--data_dir", type=str, default="dataset/dataset/2026-05-27/test")
