@@ -305,6 +305,20 @@ conda run -n dic python _test_irregular_roi.py --sample 5 --roi_type circle --sa
 | B | 0.0396 | 0.0026 | 0.039 (26x) |
 | C | 0.0566 | 0.0049 | 0.072 (14x) |
 
+### 结果图
+
+**数据集自带 ROI（全图）：**
+
+![irregular_roi_abc](predictions/irregular_roi_abc.png)
+
+**环形 ROI：**
+
+![irregular_roi_ring_abc](predictions/irregular_roi_ring_abc.png)
+
+**缺口板 ROI（dogbone + 中心孔）：**
+
+![irregular_roi_notch_abc](predictions/irregular_roi_notch_abc.png)
+
 ## 9. 损失函数
 
 ### 简易训练 `_train_simple.py`
