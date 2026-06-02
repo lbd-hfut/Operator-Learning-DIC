@@ -28,7 +28,7 @@ class UnetDICConfig:
     weight_decay: float = 1e-5
     warmup_steps: int = 0
     warmup_start_factor: float = 1e-3
-    max_steps: int = 100000
+    max_epochs: int = 100
     batch_size: int = 8
 
     # --- Loss ---

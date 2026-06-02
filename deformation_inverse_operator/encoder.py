@@ -8,6 +8,7 @@ Two-stage encoding:
 """
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from common.cross_attention import CrossLinearAttention
 from common.self_attention import LinearAttention
@@ -75,19 +76,26 @@ class SiameseCNNEncoder(nn.Module):
         self.cnn = nn.Sequential(*layers)
         self.proj = nn.Conv2d(current_ch, feature_dim, 1)
 
-        # Position embedding
-        max_hw = 256
-        self.pos_embed = nn.Parameter(torch.zeros(1, feature_dim, max_hw, max_hw))
+        # Position embedding (stored at moderate size; interpolated if needed)
+        self._pos_hw = 256
+        self.pos_embed = nn.Parameter(torch.zeros(1, feature_dim, self._pos_hw, self._pos_hw))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
     def forward(self, img: torch.Tensor) -> torch.Tensor:
         B, C, H, W = img.shape
         x = self.cnn(img)
         _, _, Hf, Wf = x.shape
-        pos = self.pos_embed[:, :, :Hf, :Wf]
+
+        # Position embedding (interpolate if feature map exceeds stored size)
+        if Hf <= self._pos_hw and Wf <= self._pos_hw:
+            pos = self.pos_embed[:, :, :Hf, :Wf]
+        else:
+            pos = F.interpolate(
+                self.pos_embed, size=(Hf, Wf), mode="bilinear", align_corners=True,
+            )
         x = x + pos
-        x = self.proj(x)
-        x = x.flatten(2).transpose(1, 2)  # [B, N, feature_dim]
+
+        x = self.proj(x)  # [B, feature_dim, Hf, Wf]
         return x
 
 

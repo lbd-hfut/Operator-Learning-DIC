@@ -8,7 +8,6 @@ For each query point y:
   f_tar(y) = bilinear_sample(F_tar_2d, y)
   u(y) = MLP([GFF(y), f_ref, f_tar, f_tar - f_ref])
 """
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -47,18 +46,17 @@ class InverseDecoder(nn.Module):
 
         Args:
             query_points: [B, N_q, 2] normalized coords in [0,1]
-            f_ref: [B, N_kv, d] reference image features
-            f_tar: [B, N_kv, d] target image features
+            f_ref: [B, d, Hf, Wf] reference image features
+            f_tar: [B, d, Hf, Wf] target image features
 
         Returns:
             u_pred: [B, N_q, 2]
         """
         B, N_q, _ = query_points.shape
-        _, N_kv, d = f_ref.shape
-        Hf = Wf = int(math.sqrt(N_kv))
+        B, d, Hf, Wf = f_ref.shape
 
         def sample(f_map):
-            f_2d = f_map.transpose(1, 2).reshape(B, d, Hf, Wf)
+            f_2d = f_map
             grid = query_points * 2.0 - 1.0
             grid = grid.unsqueeze(2)
             out = F.grid_sample(f_2d, grid, mode='bilinear',

@@ -73,10 +73,12 @@ def train(rank: int, world_size: int, config: InverseOperatorConfig,
         model = DDP(model, device_ids=[rank])
 
     # Optimizer
+    steps_per_epoch = len(loader)
+    total_steps = config.max_epochs * steps_per_epoch
     optimizer = AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     warmup = LinearLR(optimizer, start_factor=config.warmup_start_factor, end_factor=1.0,
                       total_iters=config.warmup_steps)
-    cosine = CosineAnnealingLR(optimizer, T_max=config.max_steps - config.warmup_steps,
+    cosine = CosineAnnealingLR(optimizer, T_max=total_steps - config.warmup_steps,
                                eta_min=config.learning_rate * 1e-1)
     scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine],
                              milestones=[config.warmup_steps])
@@ -106,13 +108,20 @@ def train(rank: int, world_size: int, config: InverseOperatorConfig,
 
     # Training
     model.train()
-    for epoch in range(start_epoch, config.max_steps // len(loader) + 1):
+    resume_step_in_epoch = global_step % steps_per_epoch if resume_state else 0
+
+    for epoch in range(start_epoch, config.max_epochs):
         if isinstance(sampler, DistributedSampler):
             sampler.set_epoch(epoch)
 
+        epoch_loss_sum = 0.0
+        epoch_data_loss_sum = 0.0
+        epoch_batches = 0
+        step_in_epoch = 0
+
         for batch in loader:
-            if resume_state is not None and global_step < resume_state["global_step"]:
-                global_step += 1
+            if resume_state is not None and epoch == start_epoch and step_in_epoch < resume_step_in_epoch:
+                step_in_epoch += 1
                 continue
 
             ref = batch["ref_img"].to(device)
@@ -132,10 +141,14 @@ def train(rank: int, world_size: int, config: InverseOperatorConfig,
                 optimizer.zero_grad()
                 scheduler.step()
 
-            if rank == 0 and global_step % config.log_every == 0:
+            epoch_loss_sum += loss.item()
+            epoch_data_loss_sum += loss_dict["data_loss"].item()
+            epoch_batches += 1
+
+            if rank == 0 and step_in_epoch % config.log_every == 0:
                 current_lr = scheduler.get_last_lr()[0]
                 print(
-                    f"[Step {global_step:06d}] "
+                    f"epoch [{epoch:03d}][{step_in_epoch:04d}] "
                     f"loss={loss.item():.6f} "
                     f"data_loss={loss_dict['data_loss'].item():.6f} "
                     f"lr={current_lr:.2e}"
@@ -160,10 +173,24 @@ def train(rank: int, world_size: int, config: InverseOperatorConfig,
                 )
 
             global_step += 1
-            if global_step >= config.max_steps:
+            step_in_epoch += 1
+
+            if global_step >= total_steps:
                 break
 
-        if global_step >= config.max_steps:
+        # --- End of epoch ---
+        if rank == 0 and epoch_batches > 0:
+            avg_loss = epoch_loss_sum / epoch_batches
+            avg_data_loss = epoch_data_loss_sum / epoch_batches
+            current_lr = scheduler.get_last_lr()[0]
+            print(
+                f"epoch [{epoch:03d}] avg "
+                f"loss={avg_loss:.6f} "
+                f"data_loss={avg_data_loss:.6f} "
+                f"lr={current_lr:.2e}"
+            )
+
+        if global_step >= total_steps:
             break
 
     # Save final checkpoint

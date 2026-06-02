@@ -7,7 +7,6 @@ For each query point y:
   f_local(y) = bilinear_sample(F_2d, y)
   u(y) = MLP([GFF(y), f_local(y)])
 """
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -40,11 +39,10 @@ class SimpleLocalDecoder(nn.Module):
 
     def forward(self, query_points, f_input):
         B, N_q, _ = query_points.shape
-        _, N_kv, d = f_input.shape
-        Hf = Wf = int(math.sqrt(N_kv))
+        B, d, Hf, Wf = f_input.shape
 
         # Sample local encoder feature at each query point
-        f_2d = f_input.transpose(1, 2).reshape(B, d, Hf, Wf)
+        f_2d = f_input
         grid = query_points * 2.0 - 1.0
         grid = grid.unsqueeze(2)
         f_local = F.grid_sample(f_2d, grid, mode='bilinear',

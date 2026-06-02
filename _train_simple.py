@@ -16,9 +16,9 @@ from dataset.collate import collate_fn
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--route", type=str, default="A", choices=["A", "B", "C"])
-parser.add_argument("--steps", type=int, default=10000)
+parser.add_argument("--epochs", type=int, default=100)
 parser.add_argument("--lr", type=float, default=1e-4)
-parser.add_argument("--data_dir", type=str, default="dataset/dataset/2026-05-27/train")
+parser.add_argument("--data_dir", type=str, default="dataset/dataset/2026-06-01/train")
 parser.add_argument("--batch_size", type=int, default=8)
 args = parser.parse_args()
 
@@ -58,9 +58,6 @@ ckpt_dir.mkdir(parents=True, exist_ok=True)
 opt = AdamW(model.parameters(), lr=args.lr)
 criterion = nn.MSELoss()
 
-print(f"Route {args.route} | Params: {sum(p.numel() for p in model.parameters()):,}")
-print(f"Dataset: {len(dataset)} samples, {len(loader)} batches")
-
 
 def sample_dense_at_queries(u_dense, qpts):
     """Sample a dense [B, 2, H, W] prediction at query points [B, N_q, 2] → [B, N_q, 2]."""
@@ -74,11 +71,16 @@ def sample_dense_at_queries(u_dense, qpts):
 
 model.train()
 best_mse = float("inf")
-step = 0
-while step < args.steps:
+global_step = 0
+print(f"Route {args.route} | Params: {sum(p.numel() for p in model.parameters()):,}")
+print(f"Dataset: {len(dataset)} samples, {len(loader)} batches/epoch, {args.epochs} epochs")
+
+for epoch in range(args.epochs):
+    epoch_loss_sum = 0.0
+    epoch_batches = 0
+    step_in_epoch = 0
+
     for batch in loader:
-        if step >= args.steps:
-            break
         ref = batch["ref_img"].to(device)
         tar = batch["tar_img"].to(device)
         qpts = batch["query_points"].to(device)
@@ -98,7 +100,10 @@ while step < args.steps:
         torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
         opt.step()
 
-        if step % 200 == 0:
+        epoch_loss_sum += loss.item()
+        epoch_batches += 1
+
+        if step_in_epoch % 200 == 0:
             u_pred_masked = u_pred[qmask]
             u_gt_masked = u_gt[qmask]
             mae = (u_pred_masked - u_gt_masked).abs().mean().item()
@@ -106,7 +111,8 @@ while step < args.steps:
             gt_std = u_gt_masked.std().item()
             zero_mse = (u_gt_masked ** 2).mean().item()
             mse_val = loss.item()
-            print(f"step {step:5d}: MSE={mse_val:.6f} (zero={zero_mse:.4f}) "
+            print(f"epoch [{epoch:03d}][{step_in_epoch:04d}] "
+                  f"MSE={mse_val:.6f} (zero={zero_mse:.4f}) "
                   f"MAE={mae:.4f} | pred=[{u_pred.min():.2f},{u_pred.max():.2f}] "
                   f"σ={pred_std:.3f} gt_σ={gt_std:.3f}")
             if mse_val < best_mse:
@@ -114,7 +120,14 @@ while step < args.steps:
                 torch.save({"model_state_dict": model.state_dict(), "config": model.config},
                            str(ckpt_dir / "best.pt"))
                 print(f"  -> saved best (MSE={best_mse:.6f})")
-        step += 1
+
+        global_step += 1
+        step_in_epoch += 1
+
+    # --- End of epoch ---
+    if epoch_batches > 0:
+        avg_loss = epoch_loss_sum / epoch_batches
+        print(f"epoch [{epoch:03d}] avg MSE={avg_loss:.6f}")
 
 torch.save({"model_state_dict": model.state_dict(), "config": model.config},
            str(ckpt_dir / "last.pt"))

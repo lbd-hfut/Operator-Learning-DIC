@@ -62,7 +62,8 @@ def train(rank: int, world_size: int, config: UnetDICConfig,
     opt = AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     criterion = torch.nn.MSELoss()
 
-    total_steps = config.max_steps
+    steps_per_epoch = len(loader)
+    total_steps = config.max_epochs * steps_per_epoch
     warmup_steps = config.warmup_steps
     if warmup_steps > 0:
         warmup = LinearLR(opt, start_factor=config.warmup_start_factor, total_iters=warmup_steps)
@@ -71,13 +72,15 @@ def train(rank: int, world_size: int, config: UnetDICConfig,
     else:
         scheduler = CosineAnnealingLR(opt, T_max=total_steps)
 
-    start_step = 0
+    start_epoch = 0
+    global_step = 0
     if resume_path:
         ckpt = torch.load(resume_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
         opt.load_state_dict(ckpt.get("optimizer_state_dict", opt.state_dict()))
-        start_step = ckpt.get("step", 0)
-        print(f"Resumed from step {start_step}")
+        global_step = ckpt.get("step", 0)
+        start_epoch = global_step // steps_per_epoch
+        print(f"Resumed from epoch {start_epoch}, step {global_step}")
 
     # ---- Training loop ----
     ckpt_dir = Path(config.checkpoint_dir)
@@ -85,13 +88,22 @@ def train(rank: int, world_size: int, config: UnetDICConfig,
 
     model.train()
     best_mse = float("inf")
-    step = start_step
     print(f"Route C | Params: {sum(p.numel() for p in model.parameters()):,}")
-    print(f"Dataset: {len(dataset)} samples, {len(loader)} batches")
+    print(f"Dataset: {len(dataset)} samples, {len(loader)} batches/epoch, {config.max_epochs} epochs")
 
-    while step < total_steps:
+    resume_step_in_epoch = global_step % steps_per_epoch if resume_path else 0
+
+    for epoch in range(start_epoch, config.max_epochs):
+        epoch_loss_sum = 0.0
+        epoch_batches = 0
+        step_in_epoch = 0
+
         for batch in loader:
-            if step >= total_steps:
+            if resume_path and epoch == start_epoch and step_in_epoch < resume_step_in_epoch:
+                step_in_epoch += 1
+                continue
+
+            if global_step >= total_steps:
                 break
 
             ref = batch["ref_img"].to(device)           # [B, 1, H, W]
@@ -121,22 +133,35 @@ def train(rank: int, world_size: int, config: UnetDICConfig,
             opt.step()
             scheduler.step()
 
-            if step % config.log_every == 0:
+            epoch_loss_sum += loss.item()
+            epoch_batches += 1
+
+            if step_in_epoch % config.log_every == 0:
                 with torch.no_grad():
                     mae = (u_pred[qmask] - u_gt[qmask]).abs().mean().item()
                     zero_mse = (u_gt[qmask] ** 2).mean().item()
-                print(f"step {step:5d}: MSE={loss.item():.6f} (zero={zero_mse:.4f}) "
+                print(f"epoch [{epoch:03d}][{step_in_epoch:04d}] "
+                      f"MSE={loss.item():.6f} (zero={zero_mse:.4f}) "
                       f"MAE={mae:.4f} | lr={scheduler.get_last_lr()[0]:.2e}")
 
-            if step % config.save_every == 0 and step > 0:
+            if global_step % config.save_every == 0 and global_step > 0:
                 if loss.item() < best_mse:
                     best_mse = loss.item()
-                    save_checkpoint(ckpt_dir / "best.pt", model, config, opt, step)
+                    save_checkpoint(ckpt_dir / "best.pt", model, config, opt, global_step)
                     print(f"  -> saved best (MSE={best_mse:.6f})")
 
-            step += 1
+            global_step += 1
+            step_in_epoch += 1
 
-    save_checkpoint(ckpt_dir / "last.pt", model, config, opt, step)
+        # --- End of epoch ---
+        if epoch_batches > 0:
+            avg_loss = epoch_loss_sum / epoch_batches
+            print(f"epoch [{epoch:03d}] avg MSE={avg_loss:.6f} | lr={scheduler.get_last_lr()[0]:.2e}")
+
+        if global_step >= total_steps:
+            break
+
+    save_checkpoint(ckpt_dir / "last.pt", model, config, opt, global_step)
     print(f"Done. Final MSE={loss.item():.6f}, best MSE={best_mse:.6f}")
 
 

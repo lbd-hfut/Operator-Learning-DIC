@@ -5,7 +5,7 @@ The first convolutional layer performs local comparison between the two images.
 """
 import torch
 import torch.nn as nn
-import math
+import torch.nn.functional as F
 
 
 class ResBlock(nn.Module):
@@ -79,8 +79,10 @@ class DualChannelCNNEncoder(nn.Module):
         self.proj = nn.Conv2d(current_ch, feature_dim, 1)
 
         # Learnable 2D position embeddings on the feature grid
-        max_hw = 256  # maximum expected grid size
-        self.pos_embed = nn.Parameter(torch.zeros(1, feature_dim, max_hw, max_hw))
+        # Stored at a moderate size; bilinearly interpolated if the feature map
+        # exceeds this resolution at inference time.
+        self._pos_hw = 256
+        self.pos_embed = nn.Parameter(torch.zeros(1, feature_dim, self._pos_hw, self._pos_hw))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
     def forward(self, ref_img: torch.Tensor, tar_img: torch.Tensor) -> torch.Tensor:
@@ -102,13 +104,15 @@ class DualChannelCNNEncoder(nn.Module):
         B, _, H, W = x.shape
         x = self.cnn(x)  # [B, d, H/ds, W/ds]
 
-        # Add position embedding
+        # Add position embedding (interpolate if feature map exceeds stored size)
         _, _, Hf, Wf = x.shape
-        pos = self.pos_embed[:, :, :Hf, :Wf]
+        if Hf <= self._pos_hw and Wf <= self._pos_hw:
+            pos = self.pos_embed[:, :, :Hf, :Wf]
+        else:
+            pos = F.interpolate(
+                self.pos_embed, size=(Hf, Wf), mode="bilinear", align_corners=True,
+            )
         x = x + pos
 
-        x = self.proj(x)  # [B, feature_dim, H/ds, W/ds]
-
-        # Flatten spatial dims: [B, N, d]
-        x = x.flatten(2).transpose(1, 2)
+        x = self.proj(x)  # [B, feature_dim, Hf, Wf]
         return x

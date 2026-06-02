@@ -41,7 +41,7 @@ class SolverOperatorConfig:
     weight_decay: float = 1e-5
     warmup_steps: int = 2000
     warmup_start_factor: float = 1e-3   # warmup 起始 lr = learning_rate * warmup_start_factor
-    max_steps: int = 100000
+    max_epochs: int = 100
     batch_size: int = 8
     accumulate_grad_batches: int = 1
 
