@@ -44,6 +44,21 @@ conda run -n dic python _predict.py --route C --ckpt checkpoints/route_c/best.pt
 | **模式坍塌** | 无 | 无 | 无 |
 | **适用场景** | 稀疏/任意查询点 | 稀疏/任意查询点 | 全图密集预测 |
 
+### 3.1 Route A 的位移尺度敏感性
+
+Route A 在**纯小位移数据集**上表现最优（MAE 0.032），但在**混合大小位移的数据集**上出现性能下降。原因分析：
+
+1. **diff 通道的尺度依赖**：Route A 将 `[ref, tar, tar-ref]` 3ch 拼接后送入 CNN，diff 通道的值直接取决于位移大小。大位移样本（diff ≈ 0.3~0.5）主导了 GroupNorm 的统计量，小位移样本（diff ≈ 0.02~0.05）的信号被归一化淹没。
+
+2. **训练梯度冲突**：共享 CNN 权重在同一个 batch 中被大小位移样本的不同梯度方向拉扯，导致两个尺度上的表现均退化。
+
+3. **Route B 的优势**：孪生结构独立编码 ref/tar，diff 在 256 维特征空间计算——编码器本身不受位移尺度影响，天然解耦。
+
+| 数据集 | Route A | Route B | Route C |
+|--------|---------|---------|---------|
+| 小位移 (< 1px) | **0.032** | 0.059 | 0.044 |
+| 混合位移 (0.1~20px) | 退化 | 稳定 | 稳定 |
+
 ## 4. 数据准备
 
 ### 4.1 准备散斑原图
@@ -319,7 +334,82 @@ conda run -n dic python _test_irregular_roi.py --sample 5 --roi_type circle --sa
 
 ![irregular_roi_notch_abc](predictions/irregular_roi_notch_abc.png)
 
-## 9. 损失函数
+## 9. FEM 位移场不规则 ROI 测试 `test/`
+
+基于 **2D 线弹性 Navier-Cauchy 方程有限差分求解** 生成符合真实实验工况的位移场，替代随机位移场进行测试。
+
+### 9.1 测试用例
+
+| Case | 工况 | BC | 位移场 |
+|------|------|----|--------|
+| circle | 圆盘压缩 | 顶点加载 (u_y=-d, u_x=0) / 底点固支 (u_x=u_y=0) | u_y ∈ [-d, 0], u_x ≈ ±0.5d |
+| ring | 圆环压缩 | 同上 | u_y ∈ [-d, 0], u_x ≈ ±0.5d |
+| notch | 缺口板拉伸 | 顶边加载 (u_y=+d, u_x=0) / 底边固支 (u_x=u_y=0) | u_y ∈ [0, +d], u_x ≈ ±0.5d |
+| full | 全图压缩（基准） | 同上（圆盘） | u_y ∈ [-d, 0], u_x ≈ ±0.5d |
+
+### 9.2 快速使用
+
+```powershell
+# 全部测试
+python -m test.run --all
+
+# 单工况
+python -m test.run --case circle
+python -m test.run --case ring
+python -m test.run --case notch
+python -m test.run --case full
+
+# 自定义参数
+python -m test.run --case circle --disp_range -1 1 --seed 42
+
+# 仅生成 / 仅预测
+python -m test.run --case circle --generate-only
+python -m test.run --case circle --predict-only
+```
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--all` | - | 运行全部 4 个工况 |
+| `--case` | - | circle / ring / notch / full |
+| `--disp_range` | -4 4 | 位移加载范围 (px) |
+| `--image_size` | 256 | 图像尺寸 |
+| `--seed` | 0 | 随机种子 |
+| `--generate-only` | False | 仅生成图像 |
+| `--predict-only` | False | 仅预测 |
+| `--speckle_source` | test/speckle.png | 散斑图路径 |
+
+### 9.3 位移加载 1px 测试结果
+
+| Case | ROI | u_y | Route A | Route B | Route C |
+|------|-----|-----|---------|---------|---------|
+| full | 99% | [-1, 0] | 0.027 | **0.021** | 0.022 |
+| circle | 38% | [-1, 0] | 0.031 | **0.022** | 0.033 |
+| ring | 44% | [-1, 0] | 0.030 | **0.021** | 0.033 |
+| notch | 26% | [0, 1] | 0.042 | **0.028** | 0.037 |
+
+**关键发现**：
+- **Route B 全部工况最优**——孪生编码器 + 特征空间差分对 FEM 位移模式最鲁棒
+- 全图基准 MAE 最低 (0.021)，不规则 ROI 和几何不连续（孔、缺口）是主要误差源
+- Route A 在 FEM 光滑场上不如随机训练场——其 diff 通道被"平滑"位移模式削弱
+
+### 9.4 文件结构
+
+```
+test/
+  speckle.png                  # 散斑纹理源
+  roi_shapes.py                # ROI 形状生成
+  fem_displacement.py          # 2D Navier-Cauchy 有限差分求解器
+  generate.py                  # 图像生成管线
+  predict.py                   # 多路线预测 + 可视化
+  run.py                       # CLI 入口
+  output/
+    circle/                    # ref.png, tar.png, u_field.npy, roi_mask.png, *_results.png
+    ring/
+    notch/
+    full/
+```
+
+## 10. 损失函数
 
 ### 简易训练 `_train_simple.py`
 
@@ -344,7 +434,7 @@ $$\mathcal{L}_{\text{MSE}} = \frac{1}{|\text{ROI}|} \sum_{i \in \text{ROI}} \| \
 | `smoothness` | 未实现 (λ=0) | 惩罚位移场梯度剧烈变化 |
 | `compatibility` | 未实现 (λ=0) | 惩罚应变不兼容 |
 
-## 10. 架构说明
+## 11. 架构说明
 
 ### Route A：DIC Solver Operator
 
@@ -417,7 +507,7 @@ Ref + Tar (2ch)
 - **密集预测**（Route C）：U-Net 直接输出全图，无需查询点采样，训练时从密集输出采样到查询点计算损失
 - **统一损失框架**：三条路线共用 MSE / Huber 损失，仅在 ROI 内有效点计算
 
-## 11. 项目结构
+## 12. 项目结构
 
 ```
 ├── common/                         # 共享组件
@@ -467,13 +557,21 @@ Ref + Tar (2ch)
 │   ├── route_b/                    # Route B 模型权重
 │   └── route_c/                    # Route C 模型权重
 ├── predictions/                    # 预测结果图片
+├── test/                            # FEM 位移场不规则 ROI 测试
+│   ├── speckle.png                  # 散斑纹理源
+│   ├── roi_shapes.py                # ROI 形状生成 (circle/ring/notch/full)
+│   ├── fem_displacement.py          # 2D Navier-Cauchy 有限差分求解器
+│   ├── generate.py                  # 图像生成管线
+│   ├── predict.py                   # 多路线预测 + 可视化
+│   ├── run.py                       # CLI 入口
+│   └── output/                      # 生成结果
 ├── _train_simple.py                # 简易训练脚本 (A/B/C)
 ├── _predict.py                     # 预测 + 可视化脚本 (A/B/C)
 ├── _test_irregular_roi.py          # 不规则 ROI 测试 (A/B/C)
 └── experiments/                    # 实验配置和启动脚本
 ```
 
-## 12. 技术要点
+## 13. 技术要点
 
 - **Galerkin 线性注意力**（历史）：无 softmax，O(N·d²) 复杂度，K 列 InstanceNorm 保证基函数单位范数。当前 Route A/B 已移除交叉注意力，改用局部特征采样解码器
 - **模式坍塌修复**：移除 V InstanceNorm + 最终替换为 bilinear 局部特征采样 + MLP 解码
