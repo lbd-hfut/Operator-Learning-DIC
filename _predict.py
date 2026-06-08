@@ -19,7 +19,13 @@ import matplotlib.pyplot as plt
 
 
 def make_model(route, device):
-    if route == "C":
+    if route == "D":
+        from dic_vit_method.model import VitDICModel
+        from dic_vit_method.config import VitDICConfig
+        config = VitDICConfig()
+        config.warmup_steps = 0
+        return VitDICModel(config).to(device)
+    elif route == "C":
         from dic_unet_method.model import UnetDICModel
         from dic_unet_method.config import UnetDICConfig
         config = UnetDICConfig()
@@ -69,6 +75,20 @@ def predict_dense(model, ref, tar, device, route="A"):
         # UNet: direct dense output [1, 2, H, W]
         u_pred = model(ref_t, tar_t)
         return u_pred.squeeze(0).permute(1, 2, 0).cpu().numpy()
+
+    if route == "D":
+        # ViT: decode in chunks to avoid OOM
+        encoded = model.encode(ref_t, tar_t)
+        chunk_size = 4096
+        n_total = H * W
+        u_chunks = []
+        for start in range(0, n_total, chunk_size):
+            end = min(start + chunk_size, n_total)
+            q_chunk = queries[:, start:end, :]
+            u_chunk = model.decode(q_chunk, *encoded)
+            u_chunks.append(u_chunk)
+        u_pred = torch.cat(u_chunks, dim=1)
+        return u_pred.reshape(H, W, 2).cpu().numpy()
 
     queries = build_dense_queries(H, W, device)
     encoded = model.encode(ref_t, tar_t)
@@ -130,11 +150,13 @@ def train_and_save(data_dir, ckpt_path, route, steps=3000):
 
     device = torch.device("cuda")
     dataset = FolderDICDataset(str(data_dir), n_query_min=4096, n_query_max=8192)
-    loader = DataLoader(dataset, batch_size=8, shuffle=True, collate_fn=collate_fn)
+    batch_size = 4 if route == "D" else 8
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     model = make_model(route, device)
     opt = AdamW(model.parameters(), lr=1e-4)
     criterion = nn.MSELoss()
     is_route_c = route == "C"
+    is_route_d = route == "D"
 
     print(f"Training Route {route}, {steps} steps...")
     model.train()
@@ -150,17 +172,20 @@ def train_and_save(data_dir, ckpt_path, route, steps=3000):
             qmask = batch["query_mask"].to(device)
             opt.zero_grad()
 
-            if is_route_c:
+            if is_route_d:
+                u_pred, _ = model(ref, tar, qpts)
+                loss = criterion(u_pred[qmask], u_gt[qmask])
+            elif is_route_c:
                 u_dense = model(ref, tar)
                 grid = qpts * 2.0 - 1.0
                 grid = grid.unsqueeze(2)
                 u_sampled = F.grid_sample(u_dense, grid, mode="bilinear",
                                           padding_mode="border", align_corners=True)
                 u_pred = u_sampled.squeeze(-1).transpose(1, 2)
+                loss = criterion(u_pred[qmask], u_gt[qmask])
             else:
                 u_pred = model(ref, tar, qpts)
-
-            loss = criterion(u_pred[qmask], u_gt[qmask])
+                loss = criterion(u_pred[qmask], u_gt[qmask])
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
             opt.step()
@@ -178,7 +203,7 @@ def train_and_save(data_dir, ckpt_path, route, steps=3000):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--route", type=str, default="A", choices=["A", "B", "C"])
+    parser.add_argument("--route", type=str, default="A", choices=["A", "B", "C", "D"])
     parser.add_argument("--ckpt", type=str, default=None)
     parser.add_argument("--sample", type=int, default=0)
     parser.add_argument("--data_dir", type=str, default="dataset/dataset/2026-05-27/test")

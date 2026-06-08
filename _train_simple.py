@@ -1,9 +1,10 @@
-"""Simple training script — supports Route A, B, and C.
+"""Simple training script — supports Route A, B, C, and D.
 
 Usage:
     python _train_simple.py                         # Route A (default)
     python _train_simple.py --route B               # Route B
     python _train_simple.py --route C               # Route C (U-Net)
+    python _train_simple.py --route D               # Route D (ViT Transformer)
 """
 import argparse, sys; sys.path.insert(0, ".")
 from pathlib import Path
@@ -15,7 +16,7 @@ from dataset.folder_dataset import FolderDICDataset
 from dataset.collate import collate_fn
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--route", type=str, default="A", choices=["A", "B", "C"])
+parser.add_argument("--route", type=str, default="A", choices=["A", "B", "C", "D"])
 parser.add_argument("--epochs", type=int, default=100)
 parser.add_argument("--lr", type=float, default=1e-4)
 parser.add_argument("--data_dir", type=str, default="dataset/dataset/2026-06-01/train")
@@ -24,8 +25,16 @@ args = parser.parse_args()
 
 device = torch.device("cuda")
 is_route_c = args.route == "C"
+is_route_d = args.route == "D"
 
-if args.route == "C":
+if args.route == "D":
+    from dic_vit_method.model import VitDICModel
+    from dic_vit_method.config import VitDICConfig
+    config = VitDICConfig()
+    config.warmup_steps = 0
+    model = VitDICModel(config).to(device)
+    ckpt_dir = Path("checkpoints/route_d")
+elif args.route == "C":
     from dic_unet_method.model import UnetDICModel
     from dic_unet_method.config import UnetDICConfig
     config = UnetDICConfig()
@@ -58,6 +67,25 @@ ckpt_dir.mkdir(parents=True, exist_ok=True)
 opt = AdamW(model.parameters(), lr=args.lr)
 criterion = nn.MSELoss()
 
+if is_route_d:
+    # Pre-compute bin label helpers for coarse CE loss
+    coarse_centers = torch.from_numpy(config.coarse_bin_centers).to(device)
+
+
+def _bin_label(value, bin_centers):
+    """Find index of closest bin center to each value.
+
+    Args:
+        value: [N] float tensor
+        bin_centers: [n_bins] float tensor
+
+    Returns:
+        labels: [N] int64 tensor of bin indices
+    """
+    # (value.unsqueeze(-1) - centers.unsqueeze(0)).abs().argmin(-1)
+    diff = value.unsqueeze(-1) - bin_centers.unsqueeze(0)  # [N, n_bins]
+    return diff.abs().argmin(dim=-1)  # [N]
+
 
 def sample_dense_at_queries(u_dense, qpts):
     """Sample a dense [B, 2, H, W] prediction at query points [B, N_q, 2] → [B, N_q, 2]."""
@@ -89,13 +117,40 @@ for epoch in range(args.epochs):
 
         opt.zero_grad()
 
-        if is_route_c:
+        if is_route_d:
+            u_pred, loss_aux = model(ref, tar, qpts)
+
+            # MSE loss on final prediction
+            loss_mse = criterion(u_pred[qmask], u_gt[qmask])
+
+            # Coarse CE loss
+            u_gt_masked = u_gt[qmask]  # [M, 2]
+            u_x_labels = _bin_label(u_gt_masked[:, 0], coarse_centers)
+            u_y_labels = _bin_label(u_gt_masked[:, 1], coarse_centers)
+            loss_ce_x = F.cross_entropy(
+                loss_aux["coarse_logits_x"][qmask], u_x_labels,
+            )
+            loss_ce_y = F.cross_entropy(
+                loss_aux["coarse_logits_y"][qmask], u_y_labels,
+            )
+            loss_ce = loss_ce_x + loss_ce_y
+
+            # Fine MSE loss
+            u_fine_x = loss_aux["u_fine_x"][qmask]
+            u_fine_y = loss_aux["u_fine_y"][qmask]
+            u_coarse_x = loss_aux["u_coarse_x"][qmask].detach()
+            u_coarse_y = loss_aux["u_coarse_y"][qmask].detach()
+            loss_fine = criterion(u_fine_x, u_gt_masked[:, 0] - u_coarse_x) \
+                        + criterion(u_fine_y, u_gt_masked[:, 1] - u_coarse_y)
+
+            loss = loss_mse + loss_ce + config.fine_loss_weight * loss_fine
+        elif is_route_c:
             u_dense = model(ref, tar)            # [B, 2, H, W]
             u_pred = sample_dense_at_queries(u_dense, qpts)
+            loss = criterion(u_pred[qmask], u_gt[qmask])
         else:
             u_pred = model(ref, tar, qpts)
-
-        loss = criterion(u_pred[qmask], u_gt[qmask])
+            loss = criterion(u_pred[qmask], u_gt[qmask])
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
         opt.step()
