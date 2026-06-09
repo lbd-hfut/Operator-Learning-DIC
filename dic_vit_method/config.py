@@ -36,13 +36,16 @@ class VitDICConfig:
     """Configuration for Route D: ViT Transformer DIC Operator."""
 
     # --- ViT Encoder ---
+    use_cnn_frontend: bool = True          # True = CNN stem → ViT blocks (hybrid)
     vit_model: str = "vit_b_16"            # torchvision ViT variant
     vit_pretrained: bool = True            # load ImageNet weights
-    vit_freeze: bool = True                # freeze ViT backbone
+    vit_freeze: bool = True                # freeze ViT encoder blocks
     vit_feature_dim: int = 768             # ViT-B/16 hidden dim
-    feature_dim: int = 256                 # projected feature dimension
-    n_patches: int = 256                   # (256/16)^2 = 256 patch tokens
+    feature_dim: int = 256                 # decoder feature dimension
+    n_patches: int = 256                   # (16×16) = 256 tokens (4× down from 256×256)
     image_size: Tuple[int, int] = (256, 256)
+    # CNN front-end channels (4 stages, each stride-2 → total 16× down)
+    cnn_channels: Tuple[int, ...] = (64, 96, 128, 192)
 
     # --- RoPE (Rotary Position Embedding) ---
     rope_dim: int = 256                    # RoPE encoding dimension (must be multiple of 4)

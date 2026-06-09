@@ -28,15 +28,16 @@ class VitDICModel(nn.Module):
         super().__init__()
         self.config = config
 
-        # Shared ViT encoder for ref and tar
+        # Shared hybrid CNN+ViT encoder for ref and tar
         self.encoder = ViTEncoder(
             feature_dim=config.feature_dim,
             vit_feature_dim=config.vit_feature_dim,
             n_patches=config.n_patches,
             rope_dim=config.rope_dim,
             rope_min_freq=config.rope_min_freq,
-            freeze=config.vit_freeze,
+            freeze_vit=config.vit_freeze,
             pretrained=config.vit_pretrained,
+            cnn_channels=config.cnn_channels if config.use_cnn_frontend else None,
         )
 
         self.decoder = TransformerDecoder(config)
