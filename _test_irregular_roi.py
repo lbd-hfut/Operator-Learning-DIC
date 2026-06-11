@@ -37,7 +37,9 @@ def warp_image(ref, u_field):
 
 def run_prediction(route, ckpt_path, ref, tar, roi, device):
     import torch
-    if route == "C":
+    if route == "D":
+        from dic_vit_method.predict import Predictor
+    elif route == "C":
         from dic_unet_method.predict import Predictor
     elif route == "B":
         from deformation_inverse_operator.predict import Predictor
@@ -91,8 +93,11 @@ def make_synthetic_roi(shape, roi_type="circle", **kwargs):
 def plot_all(ref_masked, tar_warped, tar_orig, roi, u_gt,
              results,  # dict: route_label -> (u_pred, mae, mse, zero, ratio)
              idx, save_path):
-    """3×5 figure: images row + u_x row + u_y row.  Cols: GT, A, B, C, ROI."""
-    fig, axes = plt.subplots(3, 5, figsize=(24, 14))
+    """3×6 figure: images row + u_x row + u_y row.  Cols: GT, A, B, C, D, Error."""
+    route_order = ["A", "B", "C", "D"]
+    n_routes = len(route_order)
+    n_cols = n_routes + 2  # GT + N routes + Error
+    fig, axes = plt.subplots(3, n_cols, figsize=(6 * n_cols, 14))
     fig.suptitle(f"Irregular-ROI Prediction — Sample {idx:06d}", fontsize=14, fontweight="bold")
 
     mask = ~roi
@@ -104,10 +109,11 @@ def plot_all(ref_masked, tar_warped, tar_orig, roi, u_gt,
     axes[0, 1].set_title("Tar (warped)")
     axes[0, 2].imshow(tar_orig, cmap="gray", vmin=0, vmax=1)
     axes[0, 2].set_title("Tar (original)")
-    axes[0, 3].imshow(np.abs(tar_warped - ref_masked), cmap="hot")
+    diff_full = np.abs(tar_warped - ref_masked)
+    axes[0, 3].imshow(diff_full, cmap="hot")
     axes[0, 3].set_title("|Tar - Ref|")
-    axes[0, 4].imshow(roi, cmap="gray")
-    axes[0, 4].set_title(f"ROI ({roi.sum()} px)")
+    axes[0, n_cols - 1].imshow(roi, cmap="gray")
+    axes[0, n_cols - 1].set_title(f"ROI ({roi.sum()} px)")
 
     # Determine colorbar range
     vx = max(abs(u_gt[..., 0][roi]).max(), 0.5)
@@ -116,8 +122,7 @@ def plot_all(ref_masked, tar_warped, tar_orig, roi, u_gt,
         vx = max(vx, abs(u[..., 0][roi]).max())
         vy = max(vy, abs(u[..., 1][roi]).max())
 
-    # Row 1: u_x  (cols: GT, A, B, C, diff A-B)
-    route_order = ["A", "B", "C"]
+    # Row 1: u_x  (cols: GT, A, B, C, D, Error)
     axes[1, 0].imshow(np.ma.array(u_gt[..., 0], mask=mask), cmap="RdBu_r", vmin=-vx, vmax=vx)
     axes[1, 0].set_title(f"GT u_x\n[{u_gt[..., 0].min():.2f},{u_gt[..., 0].max():.2f}]")
     for j, route in enumerate(route_order):
@@ -131,8 +136,9 @@ def plot_all(ref_masked, tar_warped, tar_orig, roi, u_gt,
     if u_a is not None:
         err = np.ma.array(u_a[..., 0] - u_gt[..., 0], mask=mask)
         ve = max(abs(err).max(), 0.1)
-        axes[1, 4].imshow(err, cmap="RdBu_r", vmin=-ve, vmax=ve)
-        axes[1, 4].set_title(f"Error u_x (A)")
+        im = axes[1, n_cols - 1].imshow(err, cmap="RdBu_r", vmin=-ve, vmax=ve)
+        axes[1, n_cols - 1].set_title(f"Error u_x (A)")
+        plt.colorbar(im, ax=axes[1, n_cols - 1], shrink=0.8)
 
     # Row 2: u_y
     axes[2, 0].imshow(np.ma.array(u_gt[..., 1], mask=mask), cmap="RdBu_r", vmin=-vy, vmax=vy)
@@ -147,13 +153,17 @@ def plot_all(ref_masked, tar_warped, tar_orig, roi, u_gt,
     if u_a is not None:
         err = np.ma.array(u_a[..., 1] - u_gt[..., 1], mask=mask)
         ve = max(abs(err).max(), 0.1)
-        axes[2, 4].imshow(err, cmap="RdBu_r", vmin=-ve, vmax=ve)
-        axes[2, 4].set_title(f"Error u_y (A)")
+        im = axes[2, n_cols - 1].imshow(err, cmap="RdBu_r", vmin=-ve, vmax=ve)
+        axes[2, n_cols - 1].set_title(f"Error u_y (A)")
+        plt.colorbar(im, ax=axes[2, n_cols - 1], shrink=0.8)
 
     # Summary text
     lines = []
-    for route, (_, mae, mse, zero, ratio) in results.items():
-        lines.append(f"Route {route}: MAE={mae:.4f}  MSE={mse:.6f}  zero={zero:.6f}  ratio={ratio:.4f}")
+    for route in route_order:
+        r = results.get(route)
+        if r is not None:
+            _, mae, mse, zero, ratio = r
+            lines.append(f"Route {route}: MAE={mae:.4f}  MSE={mse:.6f}  zero={zero:.6f}  ratio={ratio:.4f}")
     fig.text(0.5, 0.01, "  |  ".join(lines), ha="center", fontsize=9, family="monospace")
 
     for ax in axes.flat:
@@ -170,12 +180,13 @@ def plot_all(ref_masked, tar_warped, tar_orig, roi, u_gt,
 # ── main ─────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Irregular-ROI prediction test (Route A/B/C)")
+    parser = argparse.ArgumentParser(description="Irregular-ROI prediction test (Route A/B/C/D)")
     parser.add_argument("--sample", type=int, default=0)
     parser.add_argument("--data_dir", type=str, default="dataset/dataset/2026-05-27/test")
     parser.add_argument("--ckpt_a", type=str, default="checkpoints/route_a/best.pt")
     parser.add_argument("--ckpt_b", type=str, default="checkpoints/route_b/best.pt")
     parser.add_argument("--ckpt_c", type=str, default="checkpoints/route_c/best.pt")
+    parser.add_argument("--ckpt_d", type=str, default="checkpoints/route_d/best.pt")
     parser.add_argument("--save_plot", type=str, default="predictions/irregular_roi.png")
     parser.add_argument("--roi_type", type=str, default=None,
                         choices=["circle", "ellipse", "ring", "notch"])
@@ -210,7 +221,7 @@ def main():
 
     # 4. Run all three routes
     results = {}
-    for route, ckpt_path in [("A", args.ckpt_a), ("B", args.ckpt_b), ("C", args.ckpt_c)]:
+    for route, ckpt_path in [("A", args.ckpt_a), ("B", args.ckpt_b), ("C", args.ckpt_c), ("D", args.ckpt_d)]:
         if not Path(ckpt_path).exists():
             print(f"\nRoute {route}: checkpoint not found ({ckpt_path}), skipping")
             continue

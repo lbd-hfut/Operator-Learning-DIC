@@ -34,13 +34,14 @@ DEFAULT_OUTPUT_DIR = _project_root / "test" / "output"
 DEFAULT_CKPT_A = _project_root / "checkpoints" / "route_a" / "best.pt"
 DEFAULT_CKPT_B = _project_root / "checkpoints" / "route_b" / "best.pt"
 DEFAULT_CKPT_C = _project_root / "checkpoints" / "route_c" / "best.pt"
+DEFAULT_CKPT_D = _project_root / "checkpoints" / "route_d" / "best.pt"
 
 CASES = ["circle", "ring", "notch", "full"]
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="FEM-based irregular-ROI DIC test cases (Route A/B/C)"
+        description="FEM-based irregular-ROI DIC test cases (Route A/B/C/D)"
     )
     # Case selection
     parser.add_argument("--all", action="store_true",
@@ -72,6 +73,8 @@ def parse_args():
                         help="Route B checkpoint path")
     parser.add_argument("--ckpt_c", type=str, default=str(DEFAULT_CKPT_C),
                         help="Route C checkpoint path")
+    parser.add_argument("--ckpt_d", type=str, default=str(DEFAULT_CKPT_D),
+                        help="Route D checkpoint path")
 
     # Output
     parser.add_argument("--output_dir", type=str, default=str(DEFAULT_OUTPUT_DIR),
@@ -164,6 +167,7 @@ def main():
                 ckpt_a=args.ckpt_a,
                 ckpt_b=args.ckpt_b,
                 ckpt_c=args.ckpt_c,
+                ckpt_d=args.ckpt_d,
                 device=args.device,
                 save_plot=str(save_plot),
             )
@@ -174,10 +178,13 @@ def main():
         print(f"\n{'='*60}")
         print("Summary")
         print(f"{'='*60}")
+        route_order = ["A", "B", "C", "D"]
         for case, results in all_results.items():
             print(f"\n{case}:")
-            for route, (_, mae, mse) in results.items():
-                print(f"  Route {route}: MAE={mae:.4f}  MSE={mse:.6f}")
+            for route in route_order:
+                if route in results:
+                    _, mae, mse = results[route]
+                    print(f"  Route {route}: MAE={mae:.4f}  MSE={mse:.6f}")
 
     print(f"\nDone. Outputs saved to: {args.output_dir}")
 

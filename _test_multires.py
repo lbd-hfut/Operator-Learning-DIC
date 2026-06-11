@@ -1,4 +1,4 @@
-"""Multi-resolution prediction test for Route A/B.
+"""Multi-resolution prediction test for Route A/B/C/D.
 
 Tests models trained at 256×256 on images at various resolutions.
 Uses synthetic analytic displacement fields for exact ground truth at any resolution.
@@ -63,7 +63,11 @@ def warp_image(img, u_field):
 
 def run_prediction(route, ckpt_path, ref, tar, device):
     import torch
-    if route == "B":
+    if route == "D":
+        from dic_vit_method.predict import Predictor
+    elif route == "C":
+        from dic_unet_method.predict import Predictor
+    elif route == "B":
         from deformation_inverse_operator.predict import Predictor
     else:
         from dic_solver_operator.predict import Predictor
@@ -93,8 +97,7 @@ def plot_results(results, sample_idx, ref_img, save_path):
 
     fig.suptitle(f"Multi-Resolution Test — Sample {sample_idx:06d}", fontsize=13, fontweight="bold")
 
-    route_order = ["A", "B"]
-    cmaps = {"A": "RdBu_r", "B": "RdBu_r"}
+    route_order = ["A", "B", "C", "D"]
 
     for j, res_name in enumerate(res_list):
         data = results[res_name]
@@ -145,7 +148,8 @@ def plot_mae_curve(results, save_path):
     res_labels = list(results.keys())
     x = np.arange(len(res_labels))
 
-    for route, color, marker in [("A", "#2196F3", "o"), ("B", "#FF5722", "s")]:
+    for route, color, marker in [("A", "#2196F3", "o"), ("B", "#FF5722", "s"),
+                                   ("C", "#4CAF50", "^"), ("D", "#9C27B0", "D")]:
         maes = []
         for res_name in res_labels:
             r = results[res_name]["routes"].get(route)
@@ -185,11 +189,13 @@ def parse_resolutions(arg):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Multi-resolution prediction test")
+    parser = argparse.ArgumentParser(description="Multi-resolution prediction test (Route A/B/C/D)")
     parser.add_argument("--sample", type=int, default=0)
     parser.add_argument("--data_dir", type=str, default="dataset/dataset/2026-05-27/test")
     parser.add_argument("--ckpt_a", type=str, default="checkpoints/route_a/best.pt")
     parser.add_argument("--ckpt_b", type=str, default="checkpoints/route_b/best.pt")
+    parser.add_argument("--ckpt_c", type=str, default="checkpoints/route_c/best.pt")
+    parser.add_argument("--ckpt_d", type=str, default="checkpoints/route_d/best.pt")
     parser.add_argument("--amplitude", type=float, default=3.0,
                         help="Max displacement amplitude in pixels")
     parser.add_argument("--resolutions", type=str, default="128x128,256x256,384x384,384x768,512x512,640x640",
@@ -235,7 +241,7 @@ def main():
 
         entry = {"H": H, "W": W, "ref": ref_resized, "tar": tar_warped, "routes": {}}
 
-        for route, ckpt_path in [("A", args.ckpt_a), ("B", args.ckpt_b)]:
+        for route, ckpt_path in [("A", args.ckpt_a), ("B", args.ckpt_b), ("C", args.ckpt_c), ("D", args.ckpt_d)]:
             if not Path(ckpt_path).exists():
                 print(f"  Route {route}: checkpoint not found ({ckpt_path}), skipping")
                 continue
@@ -255,20 +261,28 @@ def main():
     print(f"\n{'='*60}")
     print("Summary: MAE (pixels) vs Resolution")
     print(f"{'='*60}")
-    header = f"{'Resolution':>12} | {'Route A':>10} {'Route B':>10} | {'Ratio_A':>8} {'Ratio_B':>8}"
+    header = f"{'Resolution':>12} | {'Route A':>10} {'Route B':>10} {'Route C':>10} {'Route D':>10} | {'Ratio_A':>8} {'Ratio_B':>8} {'Ratio_C':>8} {'Ratio_D':>8}"
     print(header)
     print("-" * len(header))
     for res_name in res_names:
         entry = results[res_name]
         ma = entry["routes"].get("A", {}).get("mae", None)
         mb = entry["routes"].get("B", {}).get("mae", None)
+        mc = entry["routes"].get("C", {}).get("mae", None)
+        md = entry["routes"].get("D", {}).get("mae", None)
         ra = entry["routes"].get("A", {}).get("ratio", None)
         rb = entry["routes"].get("B", {}).get("ratio", None)
+        rc = entry["routes"].get("C", {}).get("ratio", None)
+        rd = entry["routes"].get("D", {}).get("ratio", None)
         ma_s = f"{ma:.4f}" if ma is not None else "N/A"
         mb_s = f"{mb:.4f}" if mb is not None else "N/A"
+        mc_s = f"{mc:.4f}" if mc is not None else "N/A"
+        md_s = f"{md:.4f}" if md is not None else "N/A"
         ra_s = f"{ra:.4f}" if ra is not None else "N/A"
         rb_s = f"{rb:.4f}" if rb is not None else "N/A"
-        print(f"{res_name:>12} | {ma_s:>10} {mb_s:>10} | {ra_s:>8} {rb_s:>8}")
+        rc_s = f"{rc:.4f}" if rc is not None else "N/A"
+        rd_s = f"{rd:.4f}" if rd is not None else "N/A"
+        print(f"{res_name:>12} | {ma_s:>10} {mb_s:>10} {mc_s:>10} {md_s:>10} | {ra_s:>8} {rb_s:>8} {rc_s:>8} {rd_s:>8}")
 
     # Plots
     print("\nPlotting ...")

@@ -20,14 +20,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-def run_predictions(ref, tar, roi, ckpt_a=None, ckpt_b=None, ckpt_c=None, device="cuda"):
-    """Run all three route predictions on a test case.
+def run_predictions(ref, tar, roi, ckpt_a=None, ckpt_b=None, ckpt_c=None, ckpt_d=None, device="cuda"):
+    """Run all four route predictions on a test case.
 
     Args:
         ref: [H, W] float32 reference image (ROI-masked)
         tar: [H, W] float32 target image
         roi: [H, W] bool valid ROI mask
-        ckpt_a/b/c: checkpoint paths (uses defaults if None)
+        ckpt_a/b/c/d: checkpoint paths (uses defaults if None)
         device: 'cuda' or 'cpu'
 
     Returns:
@@ -41,6 +41,7 @@ def run_predictions(ref, tar, roi, ckpt_a=None, ckpt_b=None, ckpt_c=None, device
     ckpt_a = ckpt_a or _project_root / "checkpoints" / "route_a" / "best.pt"
     ckpt_b = ckpt_b or _project_root / "checkpoints" / "route_b" / "best.pt"
     ckpt_c = ckpt_c or _project_root / "checkpoints" / "route_c" / "best.pt"
+    ckpt_d = ckpt_d or _project_root / "checkpoints" / "route_d" / "best.pt"
 
     results = {}
 
@@ -86,6 +87,20 @@ def run_predictions(ref, tar, roi, ckpt_a=None, ckpt_b=None, ckpt_c=None, device
     else:
         print(f"  Route C: checkpoint not found ({ckpt_c}), skipping")
 
+    # Route D
+    ckpt_d = Path(ckpt_d)
+    if ckpt_d.exists():
+        from dic_vit_method.predict import Predictor as PredD
+        print(f"  Route D: loading {ckpt_d} ...")
+        pred_d = PredD(str(ckpt_d), device)
+        u_d = pred_d.dense(ref, tar)
+        mae_d = np.abs(u_d[roi] - _u_gt[roi]).mean() if hasattr(_u_gt, 'shape') else 0
+        mse_d = ((u_d[roi] - _u_gt[roi]) ** 2).mean() if hasattr(_u_gt, 'shape') else 0
+        results["D"] = (u_d, mae_d, mse_d)
+        print(f"    MAE={mae_d:.4f}  MSE={mse_d:.6f}")
+    else:
+        print(f"  Route D: checkpoint not found ({ckpt_d}), skipping")
+
     return results
 
 
@@ -93,15 +108,15 @@ def run_predictions(ref, tar, roi, ckpt_a=None, ckpt_b=None, ckpt_c=None, device
 _u_gt = None
 
 
-def evaluate_case(case_name, data_dict, ckpt_a=None, ckpt_b=None, ckpt_c=None,
+def evaluate_case(case_name, data_dict, ckpt_a=None, ckpt_b=None, ckpt_c=None, ckpt_d=None,
                   device="cuda", save_plot=None):
     """Evaluate a single test case across all routes.
 
     Args:
-        case_name: 'circle', 'ring', 'notch' (for plot title)
+        case_name: 'circle', 'ring', 'notch', 'full' (for plot title)
         data_dict: dict from generate_test_case with ref_array, tar_array,
                    u_field_array, roi_array
-        ckpt_a/b/c: checkpoint paths
+        ckpt_a/b/c/d: checkpoint paths
         device: 'cuda' or 'cpu'
         save_plot: path to save figure (or None)
 
@@ -121,7 +136,7 @@ def evaluate_case(case_name, data_dict, ckpt_a=None, ckpt_b=None, ckpt_c=None,
           f"u_x: [{u_gt[..., 0][roi].min():.2f}, {u_gt[..., 0][roi].max():.2f}]  "
           f"u_y: [{u_gt[..., 1][roi].min():.2f}, {u_gt[..., 1][roi].max():.2f}]")
 
-    results = run_predictions(ref, tar, roi, ckpt_a, ckpt_b, ckpt_c, device)
+    results = run_predictions(ref, tar, roi, ckpt_a, ckpt_b, ckpt_c, ckpt_d, device)
 
     if save_plot:
         _plot_results(case_name, ref, tar, u_gt, roi, results, save_plot)
@@ -131,9 +146,11 @@ def evaluate_case(case_name, data_dict, ckpt_a=None, ckpt_b=None, ckpt_c=None,
 
 
 def _plot_results(case_name, ref, tar, u_gt, roi, results, save_path):
-    """Generate 3-row comparison figure."""
-    route_order = ["A", "B", "C"]
-    fig, axes = plt.subplots(3, 5, figsize=(24, 14))
+    """Generate 3-row comparison figure (Routes A/B/C/D)."""
+    route_order = ["A", "B", "C", "D"]
+    n_routes = len(route_order)
+    n_cols = n_routes + 2  # GT col + N route cols + error col
+    fig, axes = plt.subplots(3, n_cols, figsize=(6 * n_cols, 14))
     fig.suptitle(f"FEM-based Irregular-ROI: {case_name.title()}", fontsize=14, fontweight="bold")
 
     mask = ~roi
@@ -150,8 +167,9 @@ def _plot_results(case_name, ref, tar, u_gt, roi, results, save_path):
     axes[0, 3].set_title(f"ROI ({roi.sum()} px)")
     # FEM u_x overview in last col of row 0
     vx = max(abs(u_gt[..., 0][roi]).max(), 0.5)
-    axes[0, 4].imshow(np.ma.array(u_gt[..., 0], mask=mask), cmap="RdBu_r", vmin=-vx, vmax=vx)
-    axes[0, 4].set_title(f"FEM GT u_x\n[{u_gt[..., 0][roi].min():.2f},{u_gt[..., 0][roi].max():.2f}]")
+    im = axes[0, n_cols - 1].imshow(np.ma.array(u_gt[..., 0], mask=mask), cmap="RdBu_r", vmin=-vx, vmax=vx)
+    axes[0, n_cols - 1].set_title(f"FEM GT u_x\n[{u_gt[..., 0][roi].min():.2f},{u_gt[..., 0][roi].max():.2f}]")
+    plt.colorbar(im, ax=axes[0, n_cols - 1], shrink=0.8)
 
     # Determine colorbar ranges from all results
     vx = max(abs(u_gt[..., 0][roi]).max(), 0.5)
@@ -168,13 +186,14 @@ def _plot_results(case_name, ref, tar, u_gt, roi, results, save_path):
             u, mae, _ = results[route]
             axes[1, j + 1].imshow(np.ma.array(u[..., 0], mask=mask), cmap="RdBu_r", vmin=-vx, vmax=vx)
             axes[1, j + 1].set_title(f"Route {route} u_x\nMAE={mae:.4f}")
-    # Error col
+    # Error col (use Route A for reference)
     if "A" in results:
         u_a = results["A"][0]
         err_x = np.ma.array(u_a[..., 0] - u_gt[..., 0], mask=mask)
         ve_x = max(abs(err_x).max(), 0.1)
-        axes[1, 4].imshow(err_x, cmap="RdBu_r", vmin=-ve_x, vmax=ve_x)
-        axes[1, 4].set_title(f"Error u_x (A)")
+        im = axes[1, n_cols - 1].imshow(err_x, cmap="RdBu_r", vmin=-ve_x, vmax=ve_x)
+        axes[1, n_cols - 1].set_title(f"Error u_x (A)")
+        plt.colorbar(im, ax=axes[1, n_cols - 1], shrink=0.8)
 
     # Row 2: u_y
     axes[2, 0].imshow(np.ma.array(u_gt[..., 1], mask=mask), cmap="RdBu_r", vmin=-vy, vmax=vy)
@@ -188,8 +207,9 @@ def _plot_results(case_name, ref, tar, u_gt, roi, results, save_path):
         u_a = results["A"][0]
         err_y = np.ma.array(u_a[..., 1] - u_gt[..., 1], mask=mask)
         ve_y = max(abs(err_y).max(), 0.1)
-        axes[2, 4].imshow(err_y, cmap="RdBu_r", vmin=-ve_y, vmax=ve_y)
-        axes[2, 4].set_title(f"Error u_y (A)")
+        im = axes[2, n_cols - 1].imshow(err_y, cmap="RdBu_r", vmin=-ve_y, vmax=ve_y)
+        axes[2, n_cols - 1].set_title(f"Error u_y (A)")
+        plt.colorbar(im, ax=axes[2, n_cols - 1], shrink=0.8)
 
     # Summary text
     lines = []

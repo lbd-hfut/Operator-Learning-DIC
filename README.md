@@ -4,7 +4,7 @@
 
 核心思路：将 DIC 的灰度不变假设 `I_ref(x) = I_tar(x + u(x))` 形式化为算子学习问题，一次训练后可在任意分辨率、任意查询点上推理位移场。
 
-提供三条路线：算子学习（Route A/B）与传统 U-Net 密集预测（Route C）。
+提供四条路线：算子学习（Route A/B）、Transformer DIC（Route D）与传统 U-Net 密集预测（Route C）。
 
 ## 1. 环境配置
 
@@ -21,30 +21,44 @@ pip install torch numpy scipy h5py matplotlib tqdm einops PyYAML pillow
 # 2. 生成数据集
 conda run -n dic python -m dataset.generate_dataset --config config/dataset.yaml
 
-# 3. 训练（三选一）
+# 3. 训练（四选一）
 conda run -n dic python _train_simple.py --route A --steps 10000
 conda run -n dic python _train_simple.py --route B --steps 5000 --batch_size 4
 conda run -n dic python _train_simple.py --route C --steps 5000 --batch_size 4
+conda run -n dic python _train_simple.py --route D --steps 5000 --batch_size 4
 
 # 4. 预测 + 可视化
 conda run -n dic python _predict.py --route A --ckpt checkpoints/route_a/best.pt --sample 0
 conda run -n dic python _predict.py --route B --ckpt checkpoints/route_b/best.pt --sample 0
 conda run -n dic python _predict.py --route C --ckpt checkpoints/route_c/best.pt --sample 0
+conda run -n dic python _predict.py --route D --ckpt checkpoints/route_d/best.pt --sample 0
 ```
 
-## 3. 三条路线对比
+## 3. 四条路线对比
 
-| | Route A | Route B | Route C |
-|---|---|---|---|
-| **方法** | 双通道 CNN + 查询点解码 | 孪生 CNN + 查询点解码 | U-Net 密集预测 |
-| **输入** | [ref, tar, diff] 3ch | ref 1ch + tar 1ch (独立) | [ref, tar] 2ch |
-| **推理方式** | 逐查询点 | 逐查询点 | 一次前向全图 |
-| **参数量** | ~23.6M | ~23.6M | ~31.0M |
-| **MAE (sample 0)** | 0.032 | 0.059 | 0.044 |
-| **模式坍塌** | 无 | 无 | 无 |
-| **适用场景** | 稀疏/任意查询点 | 稀疏/任意查询点 | 全图密集预测 |
+| | Route A | Route B | Route C | Route D |
+|---|---|---|---|---|
+| **方法** | 双通道 CNN + 查询点解码 | 孪生 CNN + 查询点解码 | U-Net 密集预测 | CNN+ViT Transformer |
+| **输入** | [ref, tar, diff] 3ch | ref 1ch + tar 1ch (独立) | [ref, tar] 2ch | ref 1ch + tar 1ch |
+| **推理方式** | 逐查询点 | 逐查询点 | 一次前向全图 | 逐 token（分块解码） |
+| **参数量** | ~23.6M | ~23.6M | ~31.0M | ~3.08M (trainable) |
+| **MAE (sample 0)** | 0.032 | 0.059 | 0.044 | TBD |
+| **模式坍塌** | 无 | 无 | 无 | 无 |
+| **适用场景** | 稀疏/任意查询点 | 稀疏/任意查询点 | 全图密集预测 | Attention 特征匹配 |
 
-### 3.1 Route A 的位移尺度敏感性
+### 3.1 Route D：CNN+ViT Transformer DIC
+
+Route D 将 DIC 形式化为 token-in/token-out 的 Transformer 算子学习问题：
+
+- **CNN Stem**（trainable, 1.2M）：4 级 stride-2 下采样 (256→16×16)，等效 token 分辨率 4×4 px，保留散斑细粒度纹理
+- **ViT Encoder**（frozen, 12 layers）：ImageNet 预训练 ViT-base，提供全局 self-attention 上下文
+- **Cross-Attention Decoder**（trainable, 1.86M）：RoPE query encoding → CrossAttn(ref_KV) + CrossAttn(tar_KV) → f_diff → MLP fusion
+- **双尺度输出**：Coarse 33 bins (log-spaced, ±20px, Cross-Entropy) + Fine 64 bins (uniform, ±0.5px, MSE) → u = u_coarse + Δu
+- **复合 Loss**：L_MSE + L_CE(coarse) + λ·L_MSE(fine)，λ=10
+
+设计动机：Attention 的 softmax(QK^T) 在数学上与 DIC 的 correlation-based matching (ZNCC, IC-GN) 同构。
+
+### 3.2 Route A 的位移尺度敏感性
 
 Route A 在**纯小位移数据集**上表现最优（MAE 0.032），但在**混合大小位移的数据集**上出现性能下降。原因分析：
 
@@ -153,7 +167,7 @@ dataset/dataset/2026-05-27/
 
 ### 6.1 简易训练脚本 `_train_simple.py`
 
-支持 Route A / B / C，自动保存 best.pt / last.pt。
+支持 Route A / B / C / D，自动保存 best.pt / last.pt。
 
 ```powershell
 # Route A（默认，batch_size=8）
@@ -165,19 +179,22 @@ conda run -n dic python _train_simple.py --route B --steps 5000 --batch_size 4
 # Route C（U-Net，batch_size=4）
 conda run -n dic python _train_simple.py --route C --steps 5000 --batch_size 4
 
+# Route D（CNN+ViT Transformer，batch_size=4，复合 loss）
+conda run -n dic python _train_simple.py --route D --epochs 100 --batch_size 4
+
 # 自定义参数
 conda run -n dic python _train_simple.py --route A --steps 10000 --lr 1e-4 --batch_size 8 --data_dir dataset/dataset/2026-05-27/train
 ```
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--route` | A | A / B / C |
-| `--steps` | 10000 | 训练步数 |
+| `--route` | A | A / B / C / D |
+| `--epochs` | 100 | 训练 epoch 数（Route D 使用 epoch 而非 steps） |
 | `--lr` | 1e-4 | 学习率 |
-| `--batch_size` | 8 | 批大小（Route B/C 建议 4） |
-| `--data_dir` | dataset/dataset/2026-05-27/train | 训练数据目录 |
+| `--batch_size` | 8 | 批大小（Route B/C/D 建议 4） |
+| `--data_dir` | dataset/dataset/2026-06-01/train | 训练数据目录 |
 
-输出：`checkpoints/route_{a,b,c}/{best.pt, last.pt}`
+输出：`checkpoints/route_{a,b,c,d}/{best.pt, last.pt}`
 
 ### 6.2 完整训练脚本 `train.py`
 
@@ -219,6 +236,7 @@ torchrun --nproc_per_node=4 -m dic_solver_operator.train --use_ddp --config conf
 conda run -n dic python _predict.py --route A --ckpt checkpoints/route_a/best.pt --sample 0
 conda run -n dic python _predict.py --route B --ckpt checkpoints/route_b/best.pt --sample 0
 conda run -n dic python _predict.py --route C --ckpt checkpoints/route_c/best.pt --sample 0
+conda run -n dic python _predict.py --route D --ckpt checkpoints/route_d/best.pt --sample 0
 
 # 指定输出路径
 conda run -n dic python _predict.py --route C --ckpt checkpoints/route_c/best.pt --sample 0 --save_plot checkpoints/route_c/pred_0.png
@@ -233,7 +251,7 @@ foreach ($s in 0..99) { conda run -n dic python _predict.py --route C --ckpt che
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--route` | A | A / B / C |
+| `--route` | A | A / B / C / D |
 | `--ckpt` | - | checkpoint 路径（不存在时自动训练） |
 | `--sample` | 0 | 样本编号 |
 | `--data_dir` | dataset/dataset/2026-05-27/test | 数据目录 |
@@ -269,6 +287,13 @@ import dic_unet_method.predict as PC
 pred = PC.Predictor("checkpoints/route_c/best.pt")
 u_dense = pred.dense(ref_img, tar_img)          # [H, W, 2]
 
+# Route D — CNN+ViT Transformer，支持 encode/decode 分离
+import dic_vit_method.predict as PD
+
+pred = PD.Predictor("checkpoints/route_d/best.pt")
+u_dense = pred.dense(ref_img, tar_img)          # [H, W, 2]
+u_sparse = pred.sparse(ref_img, tar_img, pts)   # [N, 2]
+
 # 一次性调用（不复用 Predictor）
 u = PA.predict_dense(ref_img, tar_img, ckpt="checkpoints/route_a/best.pt")
 u = PC.predict_dense(ref_img, tar_img, ckpt="checkpoints/route_c/best.pt")
@@ -283,7 +308,7 @@ u = PC.predict_dense(ref_img, tar_img, ckpt="checkpoints/route_c/best.pt")
 
 ## 8. 不规则 ROI 测试 `_test_irregular_roi.py`
 
-将参考图 ROI 外区域置黑，用 GT 位移场 warp 生成变形图，同时测试 Route A / B / C 三条路线。
+将参考图 ROI 外区域置黑，用 GT 位移场 warp 生成变形图，同时测试 Route A / B / C / D 四条路线。
 
 ```powershell
 # 圆形 ROI
@@ -310,6 +335,7 @@ conda run -n dic python _test_irregular_roi.py --sample 5 --roi_type circle --sa
 | `--ckpt_a` | checkpoints/route_a/best.pt | Route A checkpoint |
 | `--ckpt_b` | checkpoints/route_b/best.pt | Route B checkpoint |
 | `--ckpt_c` | checkpoints/route_c/best.pt | Route C checkpoint |
+| `--ckpt_d` | checkpoints/route_d/best.pt | Route D checkpoint |
 | `--save_plot` | predictions/irregular_roi.png | 结果图片路径 |
 
 不规则 ROI 测试结果（sample 0, 圆形 ROI）：
@@ -380,12 +406,12 @@ python -m test.run --case circle --predict-only
 
 ### 9.3 位移加载 1px 测试结果
 
-| Case | ROI | u_y | Route A | Route B | Route C |
-|------|-----|-----|---------|---------|---------|
-| full | 99% | [-1, 0] | 0.027 | **0.021** | 0.022 |
-| circle | 38% | [-1, 0] | 0.031 | **0.022** | 0.033 |
-| ring | 44% | [-1, 0] | 0.030 | **0.021** | 0.033 |
-| notch | 26% | [0, 1] | 0.042 | **0.028** | 0.037 |
+| Case | ROI | u_y | Route A | Route B | Route C | Route D |
+|------|-----|-----|---------|---------|---------|---------|
+| full | 99% | [-1, 0] | 0.027 | **0.021** | 0.022 | TBD |
+| circle | 38% | [-1, 0] | 0.031 | **0.022** | 0.033 | TBD |
+| ring | 44% | [-1, 0] | 0.030 | **0.021** | 0.033 | TBD |
+| notch | 26% | [0, 1] | 0.042 | **0.028** | 0.037 | TBD |
 
 **关键发现**：
 - **Route B 全部工况最优**——孪生编码器 + 特征空间差分对 FEM 位移模式最鲁棒
@@ -413,12 +439,20 @@ test/
 
 ### 简易训练 `_train_simple.py`
 
-三条路线统一使用 **MSE Loss**：
+**Route A / B / C** 统一使用 **MSE Loss**：
 
 $$\mathcal{L}_{\text{MSE}} = \frac{1}{|\text{ROI}|} \sum_{i \in \text{ROI}} \| \hat{u}_i - u_i \|^2$$
 
 - Route A / B：在模型输出的查询点 `[B, N_q, 2]` 上直接计算
 - Route C：从 UNet 密集输出 `[B, 2, H, W]` 经 `grid_sample` 采样到查询点后计算
+
+**Route D** 使用 **复合 Loss**（详见 `reference_paper/route_d_design.md`）：
+
+$$\mathcal{L} = \mathcal{L}_{\text{MSE}}(\hat{u}, u) + \mathcal{L}_{\text{CE}}(\text{coarse}_x, \text{bin}(u_x)) + \mathcal{L}_{\text{CE}}(\text{coarse}_y, \text{bin}(u_y)) + \lambda \cdot \mathcal{L}_{\text{MSE}}(\Delta u, u - u_{\text{coarse}})$$
+
+- Coarse head: 33 个 log-spaced bins (±20px)，Cross-Entropy 分类
+- Fine head: 64 个 uniform bins (±0.5px)，MSE 回归亚像素残差
+- λ = 10（精细回归权重）
 
 ### 完整训练 `train.py`
 
@@ -500,12 +534,41 @@ Ref + Tar (2ch)
 
 标准 5 层 U-Net，输入 ref+tar 拼接，一次前向输出全分辨率位移场。使用 GroupNorm + GELU，无 BatchNorm。
 
+### Route D：CNN + ViT Transformer DIC
+
+```
+ref [B,1,256,256]
+       │
+  CNN Stem (trainable, 1.2M)          ← 4级 stride-2 下采样
+   ├─ Conv7×7 + GN + GELU             ← 7×7 捕捉 2~5px 颗粒
+   ├─ ResBlock(64→64, /2)  → 128×128
+   ├─ ResBlock(64→96, /2)  → 64×64
+   ├─ ResBlock(96→128, /2) → 32×32
+   ├─ ResBlock(128→192, /2) → 16×16
+   └─ Conv1×1(192→768)      → 256 tokens × 768-dim
+       │
+  ViT Encoder (frozen, 12 layers)     ← 全局 self-attention
+       │
+  Proj(768→256) + RoPE
+       │
+  Cross-Attention Decoder (trainable, 1.86M)
+   ├─ RoPE query encoding
+   ├─ CrossAttn(Q→ref_KV) → q_ref
+   ├─ CrossAttn(Q→tar_KV) → q_tar
+   ├─ f_diff = q_tar - q_ref
+   ├─ MLP fusion
+   └─ Dual-scale heads (33 + 64 bins) → u_pred [B, N_q, 2]
+```
+
+CNN stem 与 Route A/B 共用 ResBlock + GN + GELU 模式，4 级下采样后等效 token 分辨率 4×4 px（优于 ViT 原生 16×16 px）。仅 3.08M 可训练参数。
+
 ### 设计要点
 
+- **Route D Attention 匹配**：Cross-attention 的 softmax(QK^T) 在数学上与 DIC correlation-based matching (ZNCC, IC-GN) 同构
 - **无交叉注意力**（Route A/B）：使用双线性特征采样 + MLP 解码，避免 Galerkin 交叉注意力的 K^T@V 瓶颈导致的模式坍塌
 - **GFF 位置编码**（Route A/B）：高斯傅里叶特征编码查询坐标，使 MLP 能表示高频位移变化
 - **密集预测**（Route C）：U-Net 直接输出全图，无需查询点采样，训练时从密集输出采样到查询点计算损失
-- **统一损失框架**：三条路线共用 MSE / Huber 损失，仅在 ROI 内有效点计算
+- **统一损失框架**：Route A/B/C 共用 MSE / Huber 损失；Route D 使用 MSE + CE(coarse) + λ·MSE(fine) 复合损失，仅在 ROI 内有效点计算
 
 ## 12. 项目结构
 
@@ -549,13 +612,20 @@ Ref + Tar (2ch)
 │   ├── model.py                    # UnetDICModel
 │   ├── predict.py                  # 预测 API
 │   └── train.py                    # 完整训练脚本
+├── dic_vit_method/                 # Route D：CNN+ViT Transformer
+│   ├── config.py                   # VitDICConfig (coarse/fine bins, CNN stem)
+│   ├── encoder.py                  # CNNStem + ViTEncoder (混合架构)
+│   ├── decoder.py                  # TransformerDecoder + DisplacementHead
+│   ├── model.py                    # VitDICModel (encode/decode/forward)
+│   └── predict.py                  # 预测 API
 ├── config/
 │   ├── dataset.yaml                # 数据集生成配置
 │   └── training.yaml               # 训练配置
 ├── checkpoints/
 │   ├── route_a/                    # Route A 模型权重
 │   ├── route_b/                    # Route B 模型权重
-│   └── route_c/                    # Route C 模型权重
+│   ├── route_c/                    # Route C 模型权重
+│   └── route_d/                    # Route D 模型权重
 ├── predictions/                    # 预测结果图片
 ├── test/                            # FEM 位移场不规则 ROI 测试
 │   ├── speckle.png                  # 散斑纹理源
@@ -565,9 +635,12 @@ Ref + Tar (2ch)
 │   ├── predict.py                   # 多路线预测 + 可视化
 │   ├── run.py                       # CLI 入口
 │   └── output/                      # 生成结果
-├── _train_simple.py                # 简易训练脚本 (A/B/C)
-├── _predict.py                     # 预测 + 可视化脚本 (A/B/C)
-├── _test_irregular_roi.py          # 不规则 ROI 测试 (A/B/C)
+├── _train_simple.py                # 简易训练脚本 (A/B/C/D)
+├── _predict.py                     # 预测 + 可视化脚本 (A/B/C/D)
+├── _test_irregular_roi.py          # 不规则 ROI 测试 (A/B/C/D)
+├── _test_multires.py               # 多分辨率测试 (A/B/C/D)
+├── reference_paper/                # 设计文档
+│   └── route_d_design.md           # Route D 架构设计记录
 └── experiments/                    # 实验配置和启动脚本
 ```
 
